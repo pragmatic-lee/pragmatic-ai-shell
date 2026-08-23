@@ -1,0 +1,36 @@
+#!/bin/sh
+# smartcli 启动脚本
+# JDK 24+ 上 openai4j/Gson 反射修改 final 字段、JLine 通过 System::load 加载原生库
+# 都会产生 WARNING 并在未来版本被阻止，需追加 --enable-final-field-mutation=ALL-UNNAMED
+# 与 --enable-native-access=ALL-UNNAMED；低版本 JDK 不识别这些参数，按版本动态添加。
+
+# 脚本所在目录（支持从任意路径调用）
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+# 依次查找 fat jar：脚本同级目录 -> 项目 target 目录
+JAR=""
+for cand in \
+    "$SCRIPT_DIR/pragmatic-ai-shell-1.0-SNAPSHOT.jar" \
+    "$SCRIPT_DIR/../target/pragmatic-ai-shell-1.0-SNAPSHOT.jar"; do
+    if [ -f "$cand" ]; then
+        JAR="$cand"
+        break
+    fi
+done
+if [ -z "$JAR" ]; then
+    echo "未找到 pragmatic-ai-shell-1.0-SNAPSHOT.jar，请先执行 mvn package" >&2
+    exit 1
+fi
+
+# 解析 java 主版本号（如 "17.0.19" -> 17）
+JAVA_MAJOR=$(java -version 2>&1 | head -n1 | sed 's/.*version "\([0-9]*\).*/\1/')
+
+JAVA_OPTS=""
+if [ "${JAVA_MAJOR:-0}" -ge 24 ] 2>/dev/null; then
+    # 允许 Gson 反射修改 final 字段，消除 WARNING 并保证未来版本可用
+    JAVA_OPTS="$JAVA_OPTS --enable-final-field-mutation=ALL-UNNAMED"
+    # 允许 JLine 通过 System::load 加载原生库，消除 JNI 受限警告
+    JAVA_OPTS="$JAVA_OPTS --enable-native-access=ALL-UNNAMED"
+fi
+
+exec java $JAVA_OPTS -jar "$JAR" "$@"
