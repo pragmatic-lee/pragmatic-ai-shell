@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit;
  * - 跨平台：Unix 用 /bin/sh -c，Windows 用 cmd.exe /c
  * - 实时输出：两个 StreamPump 线程消费 stdout/stderr
  * - 交互命令（ssh/vim 等）：inheritIO 直连终端，子进程可分配 PTY
- * - 超时：waitFor(timeout)，超时则强制销毁
+ * - 超时：waitFor(timeout)，超时则递归销毁整棵进程树（含后台任务等孙进程）
  */
 public final class ProcessCommandExecutor implements CommandExecutor {
 
@@ -37,6 +37,10 @@ public final class ProcessCommandExecutor implements CommandExecutor {
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.directory(workDir.toFile());
         pb.redirectErrorStream(false);
+        // 策略二 M3：注入会话环境覆盖表（export/unset 结果），子进程可见前序命令的设置
+        if (req.env() != null && !req.env().isEmpty()) {
+            pb.environment().putAll(req.env());
+        }
 
         long start = System.currentTimeMillis();
         // 交互式命令直接继承终端 IO，避免 stdin 非 TTY 导致 ssh 等无法分配伪终端
@@ -51,7 +55,7 @@ public final class ProcessCommandExecutor implements CommandExecutor {
 
             boolean finished = process.waitFor(req.timeout().toMillis(), TimeUnit.MILLISECONDS);
             if (!finished) {
-                process.destroyForcibly();
+                destroyProcessTree(process);
                 pool.shutdownNow();
                 long duration = System.currentTimeMillis() - start;
                 return new ExecutionResult(-1, "", duration, true);
@@ -68,6 +72,26 @@ public final class ProcessCommandExecutor implements CommandExecutor {
             pool.shutdownNow();
             long duration = System.currentTimeMillis() - start;
             return new ExecutionResult(-1, "执行异常: " + e.getMessage(), duration, false);
+        }
+    }
+
+    /**
+     * 递归销毁整棵进程树（超时场景），避免后台任务（如 nohup/& 启动的孙进程）残留为孤儿进程。
+     * 双保险：第一轮枚举并强杀全部后代与 shell 本身；短暂等待后若 shell 仍未退出
+     * （枚举瞬间新 fork 的进程），再兜底强杀一轮。
+     */
+    private void destroyProcessTree(Process process) {
+        for (int round = 0; round < 2; round++) {
+            process.toHandle().descendants().forEach(ProcessHandle::destroyForcibly);
+            process.destroyForcibly();
+            try {
+                if (process.waitFor(500, TimeUnit.MILLISECONDS)) {
+                    return; // shell 已退出，后代也已强杀
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return; // 被中断时不再等待（进程已收到强杀信号）
+            }
         }
     }
 

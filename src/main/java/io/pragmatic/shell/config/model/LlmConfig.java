@@ -72,4 +72,22 @@ public class LlmConfig {
     public void setShowProgress(boolean showProgress) {
         this.showProgress = showProgress;
     }
+
+    /** apiKey 打码展示（如 sk-****c0a），未配置显示 (未配置)，避免明文泄露（FR-13-06）。 */
+    public String maskedApiKey() {
+        if (apiKey == null || apiKey.isBlank()) {
+            return "(未配置)";
+        }
+        if (apiKey.length() <= 6) {
+            return "****";
+        }
+        return apiKey.substring(0, 3) + "****" + apiKey.substring(apiKey.length() - 3);
+    }
+
+    /** /config 展示用：与 toString 一致但 apiKey 打码。 */
+    public String maskedString() {
+        return "LlmConfig{provider='" + provider + "', baseUrl='" + baseUrl + "', model='" + model
+                + "', temperature=" + temperature + ", apiKey='" + maskedApiKey()
+                + "', timeoutSeconds=" + timeoutSeconds + ", showProgress=" + showProgress + '}';
+    }
 }

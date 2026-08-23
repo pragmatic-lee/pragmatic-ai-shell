@@ -3,6 +3,7 @@ package io.pragmatic.shell.interaction;
 import io.pragmatic.shell.audit.AuditEntry;
 import io.pragmatic.shell.audit.AuditLogger;
 import io.pragmatic.shell.config.AppConfig;
+import io.pragmatic.shell.config.ConfigValidator;
 import io.pragmatic.shell.execution.CommandExecutor;
 import io.pragmatic.shell.execution.ExecutionRequest;
 import io.pragmatic.shell.execution.ProcessCommandExecutor;
@@ -18,10 +19,17 @@ import org.jline.reader.impl.history.DefaultHistory;
 import org.jline.terminal.Terminal;
 import org.jline.terminal.TerminalBuilder;
 
+import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayDeque;
+import java.util.Deque;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeoutException;
 
@@ -39,9 +47,19 @@ public final class SmartCliShell {
     private final ConfirmationPrompt confirm;
     private ShellMode mode = ShellMode.SMART;
     private java.nio.file.Path currentDir;
+    /** 目录栈（pushd/popd，策略一 M2）。 */
+    private final Deque<Path> dirStack = new ArrayDeque<>();
+    /** 会话环境覆盖表（export/unset/source，策略二 M3），执行时注入子进程。 */
+    private final Map<String, String> envOverrides = new LinkedHashMap<>();
 
     public SmartCliShell(AppConfig config) {
-        this(config, ShellMode.SMART);
+        this(config, resolveInitialMode(config));
+    }
+
+    /** 从 shell.initialMode 解析初始模式（缺省/非法值回退语义模式，v4 FR-14）。 */
+    private static ShellMode resolveInitialMode(AppConfig config) {
+        String mode = config.getShell() != null ? config.getShell().getInitialMode() : null;
+        return "direct".equalsIgnoreCase(mode) ? ShellMode.DIRECT : ShellMode.SMART;
     }
 
     public SmartCliShell(AppConfig config, ShellMode initialMode) {
@@ -115,8 +133,8 @@ public final class SmartCliShell {
         }
         if (line.startsWith("!") || mode == ShellMode.DIRECT) {
             String cmd = line.startsWith("!") ? line.substring(1).strip() : line.strip();
-            // 先尝试 shell 内建目录命令（cd/pwd），避免落入子进程无法持久切换目录
-            if (tryBuiltinDirCommand(cmd, terminal, confirm, completer)) {
+            // 先尝试内建状态命令（cd/pwd/export/alias 等），避免落入子进程导致状态丢失
+            if (handleBuiltinStateCommand(cmd, terminal, confirm, completer)) {
                 return;
             }
             directExecute(cmd, terminal, confirm, "USER", line);
@@ -135,23 +153,23 @@ public final class SmartCliShell {
             switch (result.status()) {
                 case UNSAFE -> out.println("该操作被判定为不安全，已拒绝执行。");
                 case IMPOSSIBLE -> out.println("无法执行该请求（模型判定不可行）。");
-                case COMMAND -> routeSmart(result.command(), line, terminal, confirm);
+                case COMMAND -> {
+                    // 语义模式下 LLM 生成的状态命令同样在 REPL 层拦截（与直通模式一致）
+                    if (handleBuiltinStateCommand(result.command(), terminal, confirm, completer)) {
+                        return;
+                    }
+                    routeSmart(result.command(), line, terminal, confirm);
+                }
             }
         } catch (CancellationException e) {
-            if (pi != null) {
-                pi.stop();
-            }
+            pi.stop();
             out.println("已取消本次请求。");
         } catch (TimeoutException e) {
-            if (pi != null) {
-                pi.stop();
-            }
+            pi.stop();
             out.println("模型响应超时（" + config.getLlm().getTimeoutSeconds() + "s）。");
             downgradeToDirect(out, "超时");
         } catch (Exception e) {
-            if (pi != null) {
-                pi.stop();
-            }
+            pi.stop();
             out.println("语义服务不可用，已切换为直通模式。原因: " + e.getMessage());
             downgradeToDirect(out, "异常: " + e.getMessage());
         } finally {
@@ -193,39 +211,205 @@ public final class SmartCliShell {
     }
 
     /**
-     * 拦截 shell 内建目录命令 cd / pwd，使其在 REPL 层面持久生效。
+     * 内建状态命令分发器（见 docs/design/状态类命令REPL层处理变更计划.md）：
+     * - 目录类（cd/pwd/pushd/popd/dirs）：进程内模拟，持久生效（策略一 M2）；
+     * - 环境类（export/unset/source）：维护环境覆盖表，执行时注入子进程（策略二 M3）；
+     * - 其余状态类（alias/function）：显式提示不持久，放行子进程原样执行（策略三 M1）。
      * 返回 true 表示已被处理（无需再走子进程执行）。
      */
-    private boolean tryBuiltinDirCommand(String command, Terminal terminal,
-                                         ConfirmationPrompt confirm, PathAndBuiltinCompleter completer) {
+    private boolean handleBuiltinStateCommand(String command, Terminal terminal,
+                                              ConfirmationPrompt confirm, PathAndBuiltinCompleter completer) {
         PrintWriter out = terminal.writer();
         String[] parts = command.trim().split("\\s+");
         String name = parts[0].toLowerCase();
-        if (name.equals("pwd")) {
-            out.println(currentDir.toString());
+        switch (name) {
+            case "pwd":
+                out.println(currentDir.toString());
+                out.flush();
+                return true;
+            case "cd":
+                return doCd(parts, out, completer);
+            case "pushd":
+                return doPushd(parts, out, completer);
+            case "popd":
+                return doPopd(out, completer);
+            case "dirs":
+                printDirs(out);
+                return true;
+            case "export":
+                return doExport(parts, out);
+            case "unset":
+                return doUnset(parts, out);
+            case "source", ".":
+                return doSource(parts, out);
+            case "alias", "function":
+                // 策略三（M1）：显式提示不持久，不阻断执行
+                out.println("⚠ " + name + " 为 shell 会话状态命令，在子进程中执行不会持久生效；"
+                        + "如需使用请每次重新定义，或用 ! 前缀确认原样执行");
+                out.flush();
+                return false;
+            default:
+                return false;
+        }
+    }
+
+    /** cd：无参回 workDir，否则基于 currentDir 解析；校验目录存在后更新。 */
+    private boolean doCd(String[] parts, PrintWriter out, PathAndBuiltinCompleter completer) {
+        Path target;
+        if (parts.length < 2 || parts[1].isBlank()) {
+            target = Path.of(config.getExecution().getWorkDir()).toAbsolutePath().normalize();
+        } else {
+            target = currentDir.resolve(parts[1]).normalize();
+        }
+        java.io.File dir = target.toFile();
+        if (!dir.exists() || !dir.isDirectory()) {
+            out.println("cd: 不是有效目录: " + target);
             out.flush();
             return true;
         }
-        if (name.equals("cd")) {
-            java.nio.file.Path target;
-            if (parts.length < 2 || parts[1].isBlank()) {
-                target = java.nio.file.Path.of(config.getExecution().getWorkDir()).toAbsolutePath().normalize();
-            } else {
-                target = currentDir.resolve(parts[1]).normalize();
-            }
-            java.io.File dir = target.toFile();
-            if (!dir.exists() || !dir.isDirectory()) {
-                out.println("cd: 不是有效目录: " + target);
+        currentDir = target.toAbsolutePath().normalize();
+        completer.setWorkDir(currentDir);   // 同步更新 Tab 补全基准目录
+        out.println("（当前目录 " + currentDir + "）");
+        out.flush();
+        return true;
+    }
+
+    /** pushd：带参时当前目录入栈并进入目标目录；无参时与栈顶交换（对齐 bash 语义）。 */
+    private boolean doPushd(String[] parts, PrintWriter out, PathAndBuiltinCompleter completer) {
+        Path target;
+        if (parts.length < 2 || parts[1].isBlank()) {
+            if (dirStack.isEmpty()) {
+                out.println("pushd: 目录栈为空");
                 out.flush();
                 return true;
             }
-            currentDir = target.toAbsolutePath().normalize();
-            completer.setWorkDir(currentDir);   // 同步更新 Tab 补全基准目录
-            out.println("（当前目录 " + currentDir + "）");
+            Path top = dirStack.pop();
+            dirStack.push(currentDir);
+            target = top;
+        } else {
+            dirStack.push(currentDir);
+            target = currentDir.resolve(parts[1]).normalize();
+        }
+        java.io.File dir = target.toFile();
+        if (!dir.exists() || !dir.isDirectory()) {
+            out.println("pushd: 不是有效目录: " + target);
             out.flush();
             return true;
         }
-        return false;
+        currentDir = target.toAbsolutePath().normalize();
+        completer.setWorkDir(currentDir);
+        out.println("（当前目录 " + currentDir + "）");
+        out.flush();
+        return true;
+    }
+
+    /** popd：栈顶出栈并切换过去；空栈报错。 */
+    private boolean doPopd(PrintWriter out, PathAndBuiltinCompleter completer) {
+        if (dirStack.isEmpty()) {
+            out.println("popd: 目录栈为空");
+            out.flush();
+            return true;
+        }
+        currentDir = dirStack.pop().toAbsolutePath().normalize();
+        completer.setWorkDir(currentDir);
+        out.println("（当前目录 " + currentDir + "）");
+        out.flush();
+        return true;
+    }
+
+    /** dirs：打印目录栈（当前目录在前）。 */
+    private void printDirs(PrintWriter out) {
+        StringBuilder sb = new StringBuilder("目录栈: ").append(currentDir);
+        for (Path p : dirStack) {
+            sb.append(" ← ").append(p);
+        }
+        out.println(sb);
+        out.flush();
+    }
+
+    /** export：写入环境覆盖表，执行时注入子进程；无参时列出当前会话已导出项。 */
+    private boolean doExport(String[] parts, PrintWriter out) {
+        if (parts.length < 2) {
+            if (envOverrides.isEmpty()) {
+                out.println("（当前会话无自定义环境变量）");
+            } else {
+                envOverrides.forEach((k, v) -> out.println("export " + k + "=" + v));
+            }
+            out.flush();
+            return true;
+        }
+        for (int i = 1; i < parts.length; i++) {
+            String arg = parts[i];
+            int eq = arg.indexOf('=');
+            if (eq <= 0) {
+                // export FOO（无赋值）：保留已有值或置空标记
+                envOverrides.put(arg, envOverrides.getOrDefault(arg, ""));
+            } else {
+                envOverrides.put(arg.substring(0, eq), stripQuotes(arg.substring(eq + 1)));
+            }
+        }
+        out.println("（已设置环境变量，后续命令生效）");
+        out.flush();
+        return true;
+    }
+
+    /** unset：从环境覆盖表移除。 */
+    private boolean doUnset(String[] parts, PrintWriter out) {
+        for (int i = 1; i < parts.length; i++) {
+            envOverrides.remove(parts[i]);
+        }
+        out.println("（已移除环境变量，后续命令生效）");
+        out.flush();
+        return true;
+    }
+
+    /** source 浅解析：仅提取脚本中的 export KEY=VAL / KEY=VAL 行，其余逻辑不生效。 */
+    private boolean doSource(String[] parts, PrintWriter out) {
+        if (parts.length < 2 || parts[1].isBlank()) {
+            out.println("source: 用法: source <file>");
+            out.flush();
+            return true;
+        }
+        Path path = currentDir.resolve(parts[1]).normalize();
+        if (!path.toFile().exists() || !path.toFile().isFile()) {
+            out.println("source: 文件不存在: " + path);
+            out.flush();
+            return true;
+        }
+        int loaded = 0;
+        try {
+            for (String line : Files.readAllLines(path)) {
+                String t = line.trim();
+                if (t.isEmpty() || t.startsWith("#")) {
+                    continue;
+                }
+                String body = t.startsWith("export ") ? t.substring(7).trim() : t;
+                int eq = body.indexOf('=');
+                if (eq > 0 && body.substring(0, eq).matches("[A-Za-z_][A-Za-z0-9_]*")) {
+                    envOverrides.put(body.substring(0, eq), stripQuotes(body.substring(eq + 1).trim()));
+                    loaded++;
+                }
+            }
+        } catch (IOException e) {
+            out.println("source: 读取失败: " + e.getMessage());
+            out.flush();
+            return true;
+        }
+        out.println("（source 已加载 " + loaded + " 个环境变量；脚本中其他逻辑不会生效）");
+        out.flush();
+        return true;
+    }
+
+    /** 去掉值首尾的成对引号（' 或 "）。 */
+    private static String stripQuotes(String value) {
+        if (value.length() >= 2) {
+            char first = value.charAt(0);
+            char last = value.charAt(value.length() - 1);
+            if ((first == '\'' && last == '\'') || (first == '"' && last == '"')) {
+                return value.substring(1, value.length() - 1);
+            }
+        }
+        return value;
     }
 
     private void directExecute(String command, Terminal terminal, ConfirmationPrompt confirm,
@@ -252,7 +436,8 @@ public final class SmartCliShell {
         long start = System.currentTimeMillis();
         var result = executor.execute(new ExecutionRequest(
                 command, currentDir,
-                Duration.ofSeconds(config.getExecution().getDefaultTimeoutSeconds())));
+                Duration.ofSeconds(config.getExecution().getDefaultTimeoutSeconds()),
+                envOverrides.isEmpty() ? null : Map.copyOf(envOverrides)));
         long duration = System.currentTimeMillis() - start;
         if (result.timedOut()) {
             out.println("⏱ 命令执行超时（" + config.getExecution().getDefaultTimeoutSeconds()
@@ -276,11 +461,15 @@ public final class SmartCliShell {
             }
             case "mode" -> {
                 if (parts.length > 1) {
-                    mode = parts[1].equalsIgnoreCase("direct") ? ShellMode.DIRECT : ShellMode.SMART;
+                    if (parts[1].equalsIgnoreCase("smart") && !ConfigValidator.llmConfigured(config)) {
+                        out.println("语义模式不可用：LLM 配置不完整（apiKey/baseUrl/model），请检查 config.yaml");
+                    } else {
+                        mode = parts[1].equalsIgnoreCase("direct") ? ShellMode.DIRECT : ShellMode.SMART;
+                    }
                 }
                 out.println("当前模式: " + mode);
             }
-            case "config" -> out.println(config);
+            case "config" -> out.println(config.toDisplayString());
             default -> out.println("未知内置命令: " + name + "，输入 /help 查看帮助");
         }
         out.flush();

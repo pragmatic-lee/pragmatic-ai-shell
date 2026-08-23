@@ -1,0 +1,39 @@
+# ============================================================
+# smartcli 配置文件模板（v4）
+# 使用方法: cp config.example.yaml config.yaml 后按需修改
+# 说明: 启动时必须存在有效配置文件（默认当前目录 config.yaml，
+#       或通过 smartcli --config <path> 指定），缺失将报错退出。
+# ============================================================
+
+version: 1                      # 配置版本，与程序支持版本比对（FR-15-03）
+
+# ===== 启动行为 =====
+shell:
+  initialMode: smart            # 启动模式: smart（语义）| direct（直通），缺省 smart
+
+# ===== LLM 后端（语义模式必填）=====
+llm:
+  provider: openai              # deepseek | openai | ollama
+  baseUrl: https://api.openai.com/v1
+  model: gpt-4o-mini
+  temperature: 0.0              # 采样温度，取值 [0, 2]
+  apiKey: sk-REPLACE_ME         # 语义模式必填；缺失时启动自动降级为直通模式
+  timeoutSeconds: 60            # LLM 调用超时（秒），≥ 1
+  showProgress: true            # 语义模式等待动画开关
+
+# ===== 命令执行 =====
+execution:
+  defaultTimeoutSeconds: 60     # 命令执行超时（秒），≥ 1
+  workDir: .                    # 默认工作目录（支持 ~ 展开，相对进程启动目录）
+  readOnly: false               # 只读模式: true 时仅允许执行只读命令
+
+# ===== 安全 =====
+safety:
+  strictMode: false             # 严格模式: 所有命令都需二次确认
+  confirmDestructive: true      # 危险命令二次确认
+  blockPrivateAddresses: true   # 拦截内网地址探测请求
+
+# ===== 日志 / 审计 =====
+logging:
+  auditEnabled: true            # 审计日志开关
+  auditPath: ~/.smartcli/audit.log   # 审计日志路径（支持 ~ 展开，相对进程启动目录）

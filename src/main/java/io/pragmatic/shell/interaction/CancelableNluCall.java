@@ -36,7 +36,7 @@ public final class CancelableNluCall {
 
     public CancelableNluCall(NluService nlu, String input, long timeoutSeconds) {
         this.timeoutSeconds = timeoutSeconds;
-        this.future = executor.submit((Callable<NluResult>) () -> nlu.understand(input));
+        this.future = executor.submit(() -> nlu.understand(input));
     }
 
     /** 阻塞等待结果，受 timeoutSeconds 约束。 */
