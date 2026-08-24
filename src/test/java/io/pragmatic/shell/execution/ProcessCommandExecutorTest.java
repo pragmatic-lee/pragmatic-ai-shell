@@ -37,6 +37,28 @@ class ProcessCommandExecutorTest {
     }
 
     @Test
+    void containerInteractiveCommandsNeedInheritIo() {
+        // docker exec -it 进入容器交互会话：必须走 inheritIO（否则 stdin 非 TTY，-t 报错进不去）
+        assertTrue(ProcessCommandExecutor.isInteractive("docker exec -it 2c6a71254de4 /bin/bash"));
+        assertTrue(ProcessCommandExecutor.isInteractive("docker exec --interactive --tty abc bash"));
+        assertTrue(ProcessCommandExecutor.isInteractive("kubectl exec -it pod-name -- bash"));
+        assertTrue(ProcessCommandExecutor.isInteractive("docker attach abc"));
+        assertTrue(ProcessCommandExecutor.isInteractive("docker run -it ubuntu bash"));
+        // 传统交互命令仍生效
+        assertTrue(ProcessCommandExecutor.isInteractive("ssh user@host"));
+    }
+
+    @Test
+    void plainContainerCommandsKeepPipeRelay() {
+        // 非交互容器命令（无 -it）：保持管道中继与超时兜底
+        assertFalse(ProcessCommandExecutor.isInteractive("docker ps"));
+        assertFalse(ProcessCommandExecutor.isInteractive("docker exec abc ls"));
+        assertFalse(ProcessCommandExecutor.isInteractive("docker run -d nginx"));
+        assertFalse(ProcessCommandExecutor.isInteractive("ls -la"));
+        assertFalse(ProcessCommandExecutor.isInteractive(null));
+    }
+
+    @Test
     void timeoutDestroysWholeProcessTree() throws Exception {
         StringBuilder out = new StringBuilder();
         ProcessCommandExecutor executor = new ProcessCommandExecutor(out);

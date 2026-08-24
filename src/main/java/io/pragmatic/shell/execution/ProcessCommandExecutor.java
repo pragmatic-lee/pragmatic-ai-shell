@@ -24,6 +24,10 @@ public final class ProcessCommandExecutor implements CommandExecutor {
     private static final List<String> INTERACTIVE_COMMANDS =
             List.of("ssh", "telnet", "vim", "vi", "nvim", "nano", "emacs", "less", "more", "top", "htop");
 
+    /** 容器 CLI：exec/attach（或 run -it）进入容器交互会话，同样需要 TTY。 */
+    private static final List<String> CONTAINER_CLIS =
+            List.of("docker", "podman", "nerdctl", "crictl", "kubectl");
+
     private final Appendable console;
 
     public ProcessCommandExecutor(Appendable console) {
@@ -113,7 +117,7 @@ public final class ProcessCommandExecutor implements CommandExecutor {
         }
     }
 
-    /** 首个 token 命中交互式命令清单时走 inheritIO（如 ssh/vim/top）。 */
+    /** 首个 token 命中交互式命令清单（如 ssh/vim/top），或容器 CLI 的 exec/attach/run -it 时走 inheritIO。 */
     static boolean isInteractive(String command) {
         if (command == null) {
             return false;
@@ -122,13 +126,43 @@ public final class ProcessCommandExecutor implements CommandExecutor {
         if (parts.length == 0) {
             return false;
         }
-        String name = parts[0].toLowerCase();
-        // 兼容绝对路径调用，如 /usr/bin/ssh
-        int idx = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
-        if (idx >= 0) {
-            name = name.substring(idx + 1);
+        String name = baseName(parts[0]);
+        if (INTERACTIVE_COMMANDS.contains(name)) {
+            return true;
         }
-        return INTERACTIVE_COMMANDS.contains(name);
+        return CONTAINER_CLIS.contains(name) && isContainerInteractive(parts);
+    }
+
+    /** 提取命令名，兼容绝对路径调用，如 /usr/bin/ssh。 */
+    private static String baseName(String token) {
+        String name = token.toLowerCase();
+        int idx = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
+        return idx >= 0 ? name.substring(idx + 1) : name;
+    }
+
+    /**
+     * 容器交互会话判定：docker exec -it <容器> bash / docker attach <容器> /
+     * docker run -it <镜像> bash 等；attach 本身即交互会话，exec/run 需带 -i/-t 交互标志。
+     */
+    private static boolean isContainerInteractive(String[] parts) {
+        boolean interactiveSubcommand = false; // exec / run
+        boolean wantsTty = false;
+        for (int i = 1; i < parts.length; i++) {
+            String arg = parts[i];
+            if (arg.equals("attach")) {
+                return true; // attach 直接进入容器交互会话
+            }
+            if (arg.equals("exec") || arg.equals("run")) {
+                interactiveSubcommand = true;
+                continue;
+            }
+            String lower = arg.toLowerCase();
+            if (lower.equals("-it") || lower.equals("-ti") || lower.equals("-i")
+                    || lower.equals("-t") || lower.equals("--interactive") || lower.equals("--tty")) {
+                wantsTty = true;
+            }
+        }
+        return interactiveSubcommand && wantsTty;
     }
 
     private List<String> buildCommand(String command) {

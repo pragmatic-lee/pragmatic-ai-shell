@@ -1,0 +1,53 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Pragmatic AI Shell Logo">
+  <defs>
+    <linearGradient id="bgGrad" x1="32" y1="32" x2="224" y2="224" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1E293B"/>
+      <stop offset="1" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="termGrad" x1="48" y1="56" x2="184" y2="160" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B1220"/>
+      <stop offset="1" stop-color="#111C30"/>
+    </linearGradient>
+    <linearGradient id="aiGrad" x1="168" y1="120" x2="216" y2="184" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38BDF8"/>
+      <stop offset="1" stop-color="#818CF8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 深色圆角背景 -->
+  <rect x="16" y="16" width="224" height="224" rx="48" fill="url(#bgGrad)"/>
+
+  <!-- 终端窗口 -->
+  <rect x="48" y="56" width="136" height="104" rx="16" fill="url(#termGrad)" stroke="#334155" stroke-width="2"/>
+  <!-- 终端顶部栏 -->
+  <path d="M48 72 C48 63.16 55.16 56 64 56 L168 56 C176.84 56 184 63.16 184 72 L184 82 L48 82 Z" fill="#1E293B"/>
+  <!-- 三个圆点 -->
+  <circle cx="66" cy="69" r="4" fill="#F87171"/>
+  <circle cx="80" cy="69" r="4" fill="#FBBF24"/>
+  <circle cx="94" cy="69" r="4" fill="#34D399"/>
+
+  <!-- 提示符 > -->
+  <rect x="66" y="98" width="5" height="14" rx="2.5" fill="#38BDF8"/>
+  <rect x="75" y="98" width="5" height="14" rx="2.5" fill="#38BDF8"/>
+  <!-- 命令光标方块 -->
+  <rect x="88" y="98" width="40" height="14" rx="3" fill="#334155"/>
+  <rect x="135" y="98" width="5" height="14" rx="2.5" fill="#38BDF8"/>
+
+  <!-- 第二行 输出点 -->
+  <circle cx="68" cy="128" r="3" fill="#64748B"/>
+  <circle cx="80" cy="128" r="3" fill="#64748B"/>
+  <circle cx="92" cy="128" r="3" fill="#64748B"/>
+
+  <!-- AI 机器人脑袋 -->
+  <circle cx="188" cy="150" r="34" fill="url(#aiGrad)"/>
+  <rect x="172" y="146" width="32" height="22" rx="11" fill="#0F172A"/>
+  <circle cx="182" cy="157" r="4.5" fill="#E2E8F0"/>
+  <circle cx="198" cy="157" r="4.5" fill="#E2E8F0"/>
+  <!-- 天线 -->
+  <rect x="186.5" y="110" width="3" height="10" rx="1.5" fill="#E2E8F0"/>
+  <circle cx="188" cy="108" r="4" fill="#FBBF24"/>
+
+  <!-- 安全盾牌 -->
+  <path d="M188 188 L188 206 C160 198 150 184 150 184 L150 170 C150 170 172 178 188 184 L188 188 Z" fill="#34D399"/>
+  <path d="M188 184 L188 202 C172 196 164 186 164 186 L164 174 C164 174 178 180 188 184 Z" fill="#0F172A"/>
+</svg>
