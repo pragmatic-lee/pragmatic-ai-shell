@@ -1,6 +1,7 @@
 package io.pragmatic.shell.nlu;
 
 import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatLanguageModel;
@@ -9,6 +10,7 @@ import dev.langchain4j.model.ollama.OllamaChatModel;
 import io.pragmatic.shell.config.AppConfig;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -61,10 +63,18 @@ public final class LangChainNluService implements NluService {
 
     @Override
     public NluResult understand(String naturalLanguage) {
-        var response = model.generate(List.of(
-                new SystemMessage(systemPrompt),
-                new UserMessage(naturalLanguage)
-        ));
+        return understand(naturalLanguage, List.of());
+    }
+
+    @Override
+    public NluResult understand(String naturalLanguage, List<ContextTurn> history) {
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(new SystemMessage(systemPrompt));
+        for (ContextTurn turn : history) {
+            appendTurn(messages, turn);
+        }
+        messages.add(new UserMessage(naturalLanguage));
+        var response = model.generate(messages);
         AiMessage msg = response.content();
         if (msg == null || msg.text() == null) {
             return NluResult.impossible();
@@ -82,6 +92,28 @@ public final class LangChainNluService implements NluService {
             return NluResult.impossible();
         }
         return NluResult.command(cmd);
+    }
+
+    /**
+     * 一轮历史组装（FR-CTX-03）：用户输入 → UserMessage，命令 → AiMessage，
+     * 执行结果/拒绝原因 → SystemMessage 结果块。语义与直通轮次统一处理。
+     */
+    private void appendTurn(List<ChatMessage> messages, ContextTurn turn) {
+        messages.add(new UserMessage(turn.userInput()));
+        if (turn.command() != null && !turn.command().isBlank()) {
+            messages.add(new AiMessage(turn.command()));
+        }
+        if (turn.rejectReason() != null) {
+            messages.add(new SystemMessage("上一条命令被安全策略拒绝：" + turn.rejectReason()
+                    + "。禁止生成规避安全策略的命令，应改用安全的等价方式或返回 IMPOSSIBLE。"));
+            return;
+        }
+        if (turn.resultSummary() != null && !turn.resultSummary().isBlank()) {
+            String block = "命令执行结果（退出码 " + turn.exitCode()
+                    + (turn.timedOut() ? "，超时被终止" : "") + "）：" + System.lineSeparator()
+                    + turn.resultSummary();
+            messages.add(new SystemMessage(block));
+        }
     }
 
     private String stripFence(String text) {

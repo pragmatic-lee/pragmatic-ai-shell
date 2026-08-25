@@ -20,6 +20,10 @@ llm:
   apiKey: sk-REPLACE_ME         # 语义模式必填；缺失时启动自动降级为直通模式
   timeoutSeconds: 60            # LLM 调用超时（秒），≥ 1
   showProgress: true            # 语义模式等待动画开关
+  context:                      # 多轮对话上下文（FR-CTX-07）
+    enabled: true               # 默认开启；false 时每次调用独立（v2 无上下文行为）
+    maxTurns: 10                # 保留最近轮数，≥ 1
+    maxResultChars: 2000        # 单轮命令执行结果摘要上限（字符），≥ 100
 
 # ===== 命令执行 =====
 execution:

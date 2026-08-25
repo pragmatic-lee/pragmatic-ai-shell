@@ -63,6 +63,19 @@ public final class ConfigValidator {
                     + config.getExecution().getDefaultTimeoutSeconds());
         }
 
+        // 多轮上下文配置校验（FR-CTX-07-02）：maxTurns / maxResultChars 非法值致命
+        var ctx = llm.getContext();
+        if (ctx != null) {
+            if (ctx.getMaxTurns() < 1) {
+                errors.add("[配置错误] " + file + " → llm.context.maxTurns: 必须 ≥ 1，当前 "
+                        + ctx.getMaxTurns());
+            }
+            if (ctx.getMaxResultChars() < 100) {
+                errors.add("[配置错误] " + file + " → llm.context.maxResultChars: 必须 ≥ 100，当前 "
+                        + ctx.getMaxResultChars());
+            }
+        }
+
         // 语义模式必填项（FR-13-02）：缺失 → 警告 + 降级直通（不阻断启动）
         // ollama 本地模型无需 apiKey，与 LangChainNluService.buildModel 分支对齐
         if (!llmConfigured(config)) {

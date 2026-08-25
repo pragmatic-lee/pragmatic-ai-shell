@@ -19,7 +19,7 @@ import java.util.Objects;
 public final class PathAndBuiltinCompleter implements Completer {
 
     private static final List<String> BUILTIN_COMMANDS =
-            List.of("/help", "/exit", "/quit", "/mode", "/config");
+            List.of("/help", "/exit", "/quit", "/mode", "/config", "/context", "/clear");
 
     private volatile Path workDir;
 

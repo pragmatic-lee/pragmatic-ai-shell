@@ -7,16 +7,21 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 
 /**
- * 实时读取子进程输出流，边读边转发到控制台，同时收集到 buffer。
+ * 实时读取子进程输出流，边读边转发到控制台，同时收集到有上限的尾部缓冲
+ * （FR-CTX-02：命令执行结果回流，超过 maxChars 仅保留尾部并带截断标记）。
  */
 final class StreamPump implements Runnable {
     private final BufferedReader reader;
     private final Appendable console;
+    /** 收集缓冲（实时打印之外的结构化副本）。 */
     private final StringBuilder buffer = new StringBuilder();
+    private final int maxChars;
+    private boolean truncated;
 
-    StreamPump(InputStream stream, Appendable console) {
+    StreamPump(InputStream stream, Appendable console, int maxChars) {
         this.reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8));
         this.console = console;
+        this.maxChars = Math.max(1, maxChars);
     }
 
     @Override
@@ -24,7 +29,7 @@ final class StreamPump implements Runnable {
         try {
             String line;
             while ((line = reader.readLine()) != null) {
-                buffer.append(line).append(System.lineSeparator());
+                append(line);
                 console.append(line).append(System.lineSeparator());
             }
         } catch (IOException ignored) {
@@ -34,7 +39,18 @@ final class StreamPump implements Runnable {
         }
     }
 
+    /** 追加一行到尾部缓冲；超限时丢弃头部、保留尾部，并标记截断。 */
+    private void append(String line) {
+        buffer.append(line).append(System.lineSeparator());
+        if (buffer.length() > maxChars) {
+            buffer.delete(0, buffer.length() - maxChars);
+            truncated = true;
+        }
+    }
+
+    /** 已收集的输出（截断时带前缀标记）。 */
     String collected() {
-        return buffer.toString();
+        String s = buffer.toString();
+        return truncated ? "…（输出过长，仅保留尾部）" + System.lineSeparator() + s : s;
     }
 }

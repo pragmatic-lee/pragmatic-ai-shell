@@ -1,8 +1,10 @@
 package io.pragmatic.shell.interaction;
 
+import io.pragmatic.shell.nlu.ContextTurn;
 import io.pragmatic.shell.nlu.NluResult;
 import io.pragmatic.shell.nlu.NluService;
 
+import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
@@ -35,8 +37,13 @@ public final class CancelableNluCall {
     }
 
     public CancelableNluCall(NluService nlu, String input, long timeoutSeconds) {
+        this(nlu, input, List.of(), timeoutSeconds);
+    }
+
+    /** 带多轮上下文调用（FR-CTX-03）：底层在独立线程执行 understand(input, history)。 */
+    public CancelableNluCall(NluService nlu, String input, List<ContextTurn> history, long timeoutSeconds) {
         this.timeoutSeconds = timeoutSeconds;
-        this.future = executor.submit(() -> nlu.understand(input));
+        this.future = executor.submit(() -> nlu.understand(input, history));
     }
 
     /** 阻塞等待结果，受 timeoutSeconds 约束。 */

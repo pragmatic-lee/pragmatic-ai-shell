@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit;
  * - 实时输出：两个 StreamPump 线程消费 stdout/stderr
  * - 交互命令（ssh/vim 等）：inheritIO 直连终端，子进程可分配 PTY
  * - 超时：waitFor(timeout)，超时则递归销毁整棵进程树（含后台任务等孙进程）
+ * - 输出回流（FR-CTX-02）：实时打印的同时收集尾部摘要，随 ExecutionResult.output 返回，供多轮上下文使用
  */
 public final class ProcessCommandExecutor implements CommandExecutor {
 
@@ -29,9 +30,16 @@ public final class ProcessCommandExecutor implements CommandExecutor {
             List.of("docker", "podman", "nerdctl", "crictl", "kubectl");
 
     private final Appendable console;
+    private final int maxOutputChars;
 
+    /** 输出捕获上限取默认值 2000 字符（FR-CTX-02，与 llm.context.maxResultChars 默认一致）。 */
     public ProcessCommandExecutor(Appendable console) {
+        this(console, 2000);
+    }
+
+    public ProcessCommandExecutor(Appendable console, int maxOutputChars) {
         this.console = console;
+        this.maxOutputChars = Math.max(1, maxOutputChars);
     }
 
     @Override
@@ -54,8 +62,10 @@ public final class ProcessCommandExecutor implements CommandExecutor {
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
             Process process = pb.start();
-            Future<?> outF = pool.submit(new StreamPump(process.getInputStream(), console));
-            Future<?> errF = pool.submit(new StreamPump(process.getErrorStream(), console));
+            StreamPump outPump = new StreamPump(process.getInputStream(), console, maxOutputChars);
+            StreamPump errPump = new StreamPump(process.getErrorStream(), console, maxOutputChars);
+            Future<?> outF = pool.submit(outPump);
+            Future<?> errF = pool.submit(errPump);
 
             boolean finished = process.waitFor(req.timeout().toMillis(), TimeUnit.MILLISECONDS);
             if (!finished) {
@@ -67,7 +77,7 @@ public final class ProcessCommandExecutor implements CommandExecutor {
             outF.get();
             errF.get();
             long duration = System.currentTimeMillis() - start;
-            return new ExecutionResult(process.exitValue(), "", duration, false);
+            return new ExecutionResult(process.exitValue(), mergeOutput(outPump, errPump), duration, false);
         } catch (IOException e) {
             pool.shutdownNow();
             long duration = System.currentTimeMillis() - start;
@@ -77,6 +87,20 @@ public final class ProcessCommandExecutor implements CommandExecutor {
             long duration = System.currentTimeMillis() - start;
             return new ExecutionResult(-1, "执行异常: " + e.getMessage(), duration, false);
         }
+    }
+
+    /** 合并 stdout/stderr 收集结果，超过上限截取尾部（FR-CTX-02-02，最新输出优先）。 */
+    private String mergeOutput(StreamPump out, StreamPump err) {
+        String stdout = out.collected();
+        String stderr = err.collected();
+        String merged = stderr.isBlank() ? stdout
+                : (stdout.isBlank() ? stderr
+                : stdout + System.lineSeparator() + "[stderr]" + System.lineSeparator() + stderr);
+        if (merged.length() > maxOutputChars) {
+            return "…（输出过长，仅保留尾部）" + System.lineSeparator()
+                    + merged.substring(merged.length() - maxOutputChars);
+        }
+        return merged;
     }
 
     /**

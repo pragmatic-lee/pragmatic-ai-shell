@@ -92,6 +92,29 @@ class ConfigValidatorTest {
     }
 
     @Test
+    void contextMaxTurnsBelowOneIsFatal() {
+        AppConfig c = validConfig();
+        c.getLlm().getContext().setMaxTurns(0);
+        ConfigValidator.ValidationResult r = ConfigValidator.validate(load(c));
+        assertTrue(r.errors().stream().anyMatch(e -> e.contains("llm.context.maxTurns")));
+    }
+
+    @Test
+    void contextMaxResultCharsBelow100IsFatal() {
+        AppConfig c = validConfig();
+        c.getLlm().getContext().setMaxResultChars(50);
+        ConfigValidator.ValidationResult r = ConfigValidator.validate(load(c));
+        assertTrue(r.errors().stream().anyMatch(e -> e.contains("llm.context.maxResultChars")));
+    }
+
+    @Test
+    void contextDefaultsAreValid() {
+        ConfigValidator.ValidationResult r = ConfigValidator.validate(load(validConfig()));
+        assertTrue(r.errors().isEmpty());
+        assertTrue(r.errors().stream().noneMatch(e -> e.contains("llm.context")));
+    }
+
+    @Test
     void maskedApiKeyNeverAppearsInMessages() {
         AppConfig c = validConfig();
         c.getLlm().setApiKey("sk-super-secret-value");

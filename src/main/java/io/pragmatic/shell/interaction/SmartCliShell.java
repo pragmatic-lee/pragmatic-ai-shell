@@ -6,7 +6,9 @@ import io.pragmatic.shell.config.AppConfig;
 import io.pragmatic.shell.config.ConfigValidator;
 import io.pragmatic.shell.execution.CommandExecutor;
 import io.pragmatic.shell.execution.ExecutionRequest;
+import io.pragmatic.shell.execution.ExecutionResult;
 import io.pragmatic.shell.execution.ProcessCommandExecutor;
+import io.pragmatic.shell.nlu.ContextTurn;
 import io.pragmatic.shell.nlu.LangChainNluService;
 import io.pragmatic.shell.nlu.NluResult;
 import io.pragmatic.shell.nlu.NluService;
@@ -51,6 +53,8 @@ public final class SmartCliShell {
     private final Deque<Path> dirStack = new ArrayDeque<>();
     /** 会话环境覆盖表（export/unset/source，策略二 M3），执行时注入子进程。 */
     private final Map<String, String> envOverrides = new LinkedHashMap<>();
+    /** 多轮对话上下文（FR-CTX-01）：会话内内存历史，退出即清空。 */
+    private final ConversationContext context;
 
     public SmartCliShell(AppConfig config) {
         this(config, resolveInitialMode(config));
@@ -70,6 +74,7 @@ public final class SmartCliShell {
         this.audit = new io.pragmatic.shell.audit.FileAuditLogger(
                 config.getLogging().getAuditPath(), config.getLogging().isAuditEnabled());
         this.confirm = null; // terminal 在 start 内创建
+        this.context = new ConversationContext(config.getLlm().getContext());
     }
 
     /** 懒加载 NLU，仅在进入语义模式并实际调用 LLM 时初始化（避免直通模式下因缺少 API Key 崩溃）。 */
@@ -135,6 +140,7 @@ public final class SmartCliShell {
             String cmd = line.startsWith("!") ? line.substring(1).strip() : line.strip();
             // 先尝试内建状态命令（cd/pwd/export/alias 等），避免落入子进程导致状态丢失
             if (handleBuiltinStateCommand(cmd, terminal, confirm, completer)) {
+                context.add(ContextTurn.stateCommand(cmd, "（REPL 进程内处理，已生效）"));
                 return;
             }
             directExecute(cmd, terminal, confirm, "USER", line);
@@ -147,15 +153,23 @@ public final class SmartCliShell {
                 java.time.Duration.ofSeconds(config.getLlm().getTimeoutSeconds()));
         try {
             pi.start();
-            call = new CancelableNluCall(nlu(), line, config.getLlm().getTimeoutSeconds());
+            call = new CancelableNluCall(nlu(), line, context.snapshot(),
+                    config.getLlm().getTimeoutSeconds());
             NluResult result = call.await();   // 内部处理超时/取消（Ctrl+C 中断）
             pi.stop();
             switch (result.status()) {
-                case UNSAFE -> out.println("该操作被判定为不安全，已拒绝执行。");
-                case IMPOSSIBLE -> out.println("无法执行该请求（模型判定不可行）。");
+                case UNSAFE -> {
+                    context.add(ContextTurn.modelRefused(line, "（模型判定为不安全，已拒绝执行）"));
+                    out.println("该操作被判定为不安全，已拒绝执行。");
+                }
+                case IMPOSSIBLE -> {
+                    context.add(ContextTurn.modelRefused(line, "（模型判定不可行）"));
+                    out.println("无法执行该请求（模型判定不可行）。");
+                }
                 case COMMAND -> {
                     // 语义模式下 LLM 生成的状态命令同样在 REPL 层拦截（与直通模式一致）
                     if (handleBuiltinStateCommand(result.command(), terminal, confirm, completer)) {
+                        context.add(ContextTurn.stateCommand(result.command(), "（REPL 进程内处理，已生效）"));
                         return;
                     }
                     routeSmart(result.command(), line, terminal, confirm);
@@ -166,10 +180,12 @@ public final class SmartCliShell {
             out.println("已取消本次请求。");
         } catch (TimeoutException e) {
             pi.stop();
+            context.add(ContextTurn.modelRefused(line, "（模型调用超时）"));
             out.println("模型响应超时（" + config.getLlm().getTimeoutSeconds() + "s）。");
             downgradeToDirect(out, "超时");
         } catch (Exception e) {
             pi.stop();
+            context.add(ContextTurn.modelRefused(line, "（语义服务异常）"));
             out.println("语义服务不可用，已切换为直通模式。原因: " + e.getMessage());
             downgradeToDirect(out, "异常: " + e.getMessage());
         } finally {
@@ -192,6 +208,7 @@ public final class SmartCliShell {
         if (v.type() == FilterVerdict.VerdictType.REJECT) {
             out.println("❌ " + v.message());
             audit.log(entry("LLM", input, command, -1, 0));
+            context.add(ContextTurn.rejected("LLM", input, command, v.message()));
             return;
         }
         boolean needConfirm = v.type() == FilterVerdict.VerdictType.CONFIRM;
@@ -199,15 +216,18 @@ public final class SmartCliShell {
         if (needConfirm) {
             if (!confirm.ask(v.message())) {
                 out.println("已跳过。");
+                context.add(ContextTurn.skipped("LLM", input, command));
                 return;
             }
         } else {
             if (!confirm.ask("")) {
                 out.println("已跳过。");
+                context.add(ContextTurn.skipped("LLM", input, command));
                 return;
             }
         }
-        runAndAudit(command, "LLM", input, terminal);
+        ExecutionResult result = runAndAudit(command, "LLM", input, terminal);
+        context.add(ContextTurn.completed(input, command, result.output(), result.exitCode(), result.timedOut()));
     }
 
     /**
@@ -419,19 +439,22 @@ public final class SmartCliShell {
         if (v.type() == FilterVerdict.VerdictType.REJECT) {
             out.println("❌ " + v.message());
             audit.log(entry(source, input, command, -1, 0));
+            context.add(ContextTurn.rejected(source, input, command, v.message()));
             return;
         }
         if (v.type() == FilterVerdict.VerdictType.CONFIRM) {
             if (!confirm.ask(v.message())) {
                 out.println("已跳过。");
+                context.add(ContextTurn.skipped(source, input, command));
                 return;
             }
         }
         out.println("➜ 直接执行: " + command);
-        runAndAudit(command, source, input, terminal);
+        ExecutionResult result = runAndAudit(command, source, input, terminal);
+        context.add(ContextTurn.direct(input, command, result.output(), result.exitCode(), result.timedOut()));
     }
 
-    private void runAndAudit(String command, String source, String input, Terminal terminal) {
+    private ExecutionResult runAndAudit(String command, String source, String input, Terminal terminal) {
         PrintWriter out = terminal.writer();
         long start = System.currentTimeMillis();
         var result = executor.execute(new ExecutionRequest(
@@ -447,6 +470,7 @@ public final class SmartCliShell {
         }
         audit.log(entry(source, input, command, result.exitCode(), duration));
         out.flush();
+        return result;
     }
 
     private void builtin(String line, Terminal terminal, ConfirmationPrompt confirm) {
@@ -454,11 +478,17 @@ public final class SmartCliShell {
         String[] parts = line.trim().split("\\s+");
         String name = parts[0].substring(1).toLowerCase();
         switch (name) {
-            case "help" -> out.println("/help 帮助  /exit 退出  /mode smart|direct 切换模式  /config 查看配置");
+            case "help" -> out.println("/help 帮助  /exit 退出  /mode smart|direct 切换模式  /config 查看配置"
+                    + "  /context 查看多轮上下文  /clear 清空上下文");
             case "exit", "quit" -> {
                 out.println("再见。");
                 System.exit(0);
             }
+            case "clear" -> {
+                context.clear();
+                out.println("（多轮上下文已清空，后续对话不再引用此前轮次）");
+            }
+            case "context" -> printContext(out);
             case "mode" -> {
                 if (parts.length > 1) {
                     if (parts[1].equalsIgnoreCase("smart") && !ConfigValidator.llmConfigured(config)) {
@@ -471,6 +501,35 @@ public final class SmartCliShell {
             }
             case "config" -> out.println(config.toDisplayString());
             default -> out.println("未知内置命令: " + name + "，输入 /help 查看帮助");
+        }
+        out.flush();
+    }
+
+    /** /context：展示当前多轮上下文轮次（FR-CTX-05-02，内容在入史时已脱敏）。 */
+    private void printContext(PrintWriter out) {
+        var turns = context.snapshot();
+        if (turns.isEmpty()) {
+            out.println("（多轮上下文为空" + (context.enabled() ? "" : "；且 llm.context.enabled=false，已禁用记录")
+                    + "）");
+        } else {
+            out.println("（多轮上下文已启用，保留最近 " + config.getLlm().getContext().getMaxTurns()
+                    + " 轮，当前 " + turns.size() + " 轮）");
+            for (int i = 0; i < turns.size(); i++) {
+                ContextTurn t = turns.get(i);
+                out.println("[" + (i + 1) + "] [" + t.source() + "] 用户: " + t.userInput());
+                if (t.command() != null) {
+                    out.println("    命令: " + t.command());
+                }
+                if (t.rejectReason() != null) {
+                    out.println("    结果: ❌ 被拒绝: " + t.rejectReason());
+                } else if (t.resultSummary() != null) {
+                    String summary = t.resultSummary().length() > 300
+                            ? t.resultSummary().substring(0, 300) + "…（完整摘要见发送给模型的上下文）"
+                            : t.resultSummary();
+                    out.println("    结果: " + (t.timedOut() ? "⏱ 超时; " : "退出码 " + t.exitCode() + "; ")
+                            + summary.replace("\n", "\\n"));
+                }
+            }
         }
         out.flush();
     }

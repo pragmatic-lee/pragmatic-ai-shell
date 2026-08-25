@@ -31,6 +31,7 @@ public final class ConfigLoader {
             "shell", "shell.initialMode",
             "llm", "llm.provider", "llm.baseUrl", "llm.model", "llm.temperature",
             "llm.apiKey", "llm.timeoutSeconds", "llm.showProgress",
+            "llm.context", "llm.context.enabled", "llm.context.maxTurns", "llm.context.maxResultChars",
             "execution", "execution.defaultTimeoutSeconds", "execution.workDir", "execution.readOnly",
             "safety", "safety.strictMode", "safety.confirmDestructive", "safety.blockPrivateAddresses",
             "logging", "logging.auditEnabled", "logging.auditPath");

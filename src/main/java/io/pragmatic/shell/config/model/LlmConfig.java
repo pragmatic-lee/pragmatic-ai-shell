@@ -13,6 +13,8 @@ public class LlmConfig {
     private String apiKey;
     private int timeoutSeconds = 30;
     private boolean showProgress = true;
+    /** 多轮对话上下文配置（FR-CTX-07）：默认开启，保留最近 maxTurns 轮，单轮结果摘要上限 maxResultChars 字符。 */
+    private ContextConfig context = new ContextConfig();
 
     public LlmConfig() {
     }
@@ -73,6 +75,14 @@ public class LlmConfig {
         this.showProgress = showProgress;
     }
 
+    public ContextConfig getContext() {
+        return context;
+    }
+
+    public void setContext(ContextConfig context) {
+        this.context = context;
+    }
+
     /** apiKey 打码展示（如 sk-****c0a），未配置显示 (未配置)，避免明文泄露（FR-13-06）。 */
     public String maskedApiKey() {
         if (apiKey == null || apiKey.isBlank()) {
@@ -88,6 +98,7 @@ public class LlmConfig {
     public String maskedString() {
         return "LlmConfig{provider='" + provider + "', baseUrl='" + baseUrl + "', model='" + model
                 + "', temperature=" + temperature + ", apiKey='" + maskedApiKey()
-                + "', timeoutSeconds=" + timeoutSeconds + ", showProgress=" + showProgress + '}';
+                + "', timeoutSeconds=" + timeoutSeconds + ", showProgress=" + showProgress
+                + ", context=" + context + '}';
     }
 }
