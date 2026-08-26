@@ -103,6 +103,27 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void profileConfigLoadedWithoutUnknownWarning() throws Exception {
+        Path cfg = tempDir.resolve("config.yaml");
+        Files.writeString(cfg, """
+                version: 1
+                llm:
+                  provider: deepseek
+                  profile:
+                    enabled: false
+                    toolWhitelist: [git, docker]
+                    toolProbeTimeoutMs: 500
+                """);
+        ConfigLoader.LoadResult r = ConfigLoader.load(cfg.toString());
+        // llm.profile 系列为已知字段，不应告警（环境指纹 FR-PROFILE）
+        assertTrue(r.unknownFields().stream().noneMatch(f -> f.startsWith("llm.profile")));
+        // profile 配置值完整加载，不被剔除
+        assertEquals(false, r.config().getLlm().getProfile().isEnabled());
+        assertEquals(500, r.config().getLlm().getProfile().getToolProbeTimeoutMs());
+        assertEquals(2, r.config().getLlm().getProfile().getToolWhitelist().size());
+    }
+
+    @Test
     void expandHomeHandlesTilde() {
         String home = System.getProperty("user.home");
         assertEquals(home, ConfigLoader.expandHome("~"));
