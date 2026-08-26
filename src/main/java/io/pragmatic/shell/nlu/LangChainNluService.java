@@ -23,10 +23,16 @@ public final class LangChainNluService implements NluService {
 
     private final ChatLanguageModel model;
     private final String systemPrompt;
+    private final EnvironmentProfile profile;
 
     public LangChainNluService(AppConfig config) {
+        this(config, null);
+    }
+
+    public LangChainNluService(AppConfig config, EnvironmentProfile profile) {
         this.model = buildModel(config);
         this.systemPrompt = loadSystemPrompt();
+        this.profile = profile;
     }
 
     private ChatLanguageModel buildModel(AppConfig config) {
@@ -68,8 +74,18 @@ public final class LangChainNluService implements NluService {
 
     @Override
     public NluResult understand(String naturalLanguage, List<ContextTurn> history) {
+        return understand(naturalLanguage, history, this.profile);
+    }
+
+    @Override
+    public NluResult understand(String naturalLanguage, List<ContextTurn> history,
+                                EnvironmentProfile profile) {
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(new SystemMessage(systemPrompt));
+        if (profile != null) {
+            messages.add(new SystemMessage("当前环境信息（生成命令时请遵守）："
+                    + System.lineSeparator() + profile.toPromptBlock()));
+        }
         for (ContextTurn turn : history) {
             appendTurn(messages, turn);
         }

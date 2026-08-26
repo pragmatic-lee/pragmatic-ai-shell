@@ -15,6 +15,8 @@ public class LlmConfig {
     private boolean showProgress = true;
     /** 多轮对话上下文配置（FR-CTX-07）：默认开启，保留最近 maxTurns 轮，单轮结果摘要上限 maxResultChars 字符。 */
     private ContextConfig context = new ContextConfig();
+    /** 环境指纹配置（环境感知）：默认开启，采集 OS/Shell/已装工具并注入 LLM。 */
+    private ProfileConfig profile = new ProfileConfig();
 
     public LlmConfig() {
     }
@@ -83,6 +85,14 @@ public class LlmConfig {
         this.context = context;
     }
 
+    public ProfileConfig getProfile() {
+        return profile;
+    }
+
+    public void setProfile(ProfileConfig profile) {
+        this.profile = profile;
+    }
+
     /** apiKey 打码展示（如 sk-****c0a），未配置显示 (未配置)，避免明文泄露（FR-13-06）。 */
     public String maskedApiKey() {
         if (apiKey == null || apiKey.isBlank()) {
@@ -99,6 +109,6 @@ public class LlmConfig {
         return "LlmConfig{provider='" + provider + "', baseUrl='" + baseUrl + "', model='" + model
                 + "', temperature=" + temperature + ", apiKey='" + maskedApiKey()
                 + "', timeoutSeconds=" + timeoutSeconds + ", showProgress=" + showProgress
-                + ", context=" + context + '}';
+                + ", context=" + context + ", profile=" + profile + '}';
     }
 }

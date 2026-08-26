@@ -28,6 +28,7 @@ java    12345 user   45u  IPv6 0x1234      0t0  TCP *:http-alt (LISTEN)
 
 - **🧠 语义模式（Smart）**：自然语言 → LLM 生成 shell 命令 → 确认 → 执行，支持取消（Ctrl+C）、超时/异常自动降级直通
 - **💬 多轮对话上下文**：保留最近 10 轮对话与命令执行结果（含直通 `!` 命令），模型可引用历史输出完成后续操作；`/context` 查看、`/clear` 清空，退出会话即清空
+- **🌐 环境感知（环境指纹）**：启动时采集本机 OS / Shell / 已装工具及版本，注入 LLM 使生成命令只用已安装工具、按版本选语法；`/profile` 查看、`/profile refresh` 重新采集，可一键关闭（`llm.profile.enabled=false`）
 - **⚡ 直通模式（Direct）**：`!` 前缀或 `/mode direct` 切换，命令原样执行，与原生终端无异
 - **🛡️ 三层安全防线**：模型自审（UNSAFE）→ 黑名单/风险分级过滤 → 危险命令二次确认；默认拦截内网地址扫描类请求
 - **📋 全量审计日志**：每条命令的来源（用户/LLM）、原文、执行结果、耗时，JSON 格式落盘
@@ -154,6 +155,7 @@ java    12345 user   45u  IPv6 0x1234      0t0  TCP *:http-alt (LISTEN)
 | `/config` | 查看当前配置（apiKey 打码显示） |
 | `/context` | 查看当前多轮上下文（脱敏展示；与 ↑↓ 翻阅的命令历史不同，它是发给模型的历史） |
 | `/clear` | 清空多轮上下文，后续对话不再引用此前轮次 |
+| `/profile` | 查看当前环境指纹（OS / Shell / 已装工具列表）；`/profile refresh` 强制重新采集 |
 | `/exit`、`/quit` | 退出 |
 
 ### 会话状态命令（REPL 层处理）
@@ -198,6 +200,10 @@ llm:
     enabled: true           # 默认开启；false 时每次调用独立（v2 无上下文行为）
     maxTurns: 10            # 保留最近轮数（≥ 1）
     maxResultChars: 2000    # 单轮命令结果摘要上限字符数（≥ 100），超出保留尾部
+  profile:                  # 环境指纹（环境感知）
+    enabled: true           # 默认开启；false 时不采集、不注入环境信息
+    toolWhitelist: []       # 留空使用内置默认探测清单
+    toolProbeTimeoutMs: 200 # 单工具探测超时（毫秒）
 execution:
   defaultTimeoutSeconds: 60 # 命令执行超时
   workDir: .                # 默认工作目录（~ 展开，相对进程启动目录）

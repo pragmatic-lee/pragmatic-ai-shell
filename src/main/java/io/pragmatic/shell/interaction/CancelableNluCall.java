@@ -1,6 +1,7 @@
 package io.pragmatic.shell.interaction;
 
 import io.pragmatic.shell.nlu.ContextTurn;
+import io.pragmatic.shell.nlu.EnvironmentProfile;
 import io.pragmatic.shell.nlu.NluResult;
 import io.pragmatic.shell.nlu.NluService;
 
@@ -42,8 +43,14 @@ public final class CancelableNluCall {
 
     /** 带多轮上下文调用（FR-CTX-03）：底层在独立线程执行 understand(input, history)。 */
     public CancelableNluCall(NluService nlu, String input, List<ContextTurn> history, long timeoutSeconds) {
+        this(nlu, input, history, null, timeoutSeconds);
+    }
+
+    /** 带多轮上下文 + 环境指纹调用（环境感知）：底层在独立线程执行 understand(input, history, profile)。 */
+    public CancelableNluCall(NluService nlu, String input, List<ContextTurn> history,
+                             EnvironmentProfile profile, long timeoutSeconds) {
         this.timeoutSeconds = timeoutSeconds;
-        this.future = executor.submit(() -> nlu.understand(input, history));
+        this.future = executor.submit(() -> nlu.understand(input, history, profile));
     }
 
     /** 阻塞等待结果，受 timeoutSeconds 约束。 */

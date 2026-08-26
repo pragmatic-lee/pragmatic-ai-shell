@@ -9,6 +9,8 @@ import io.pragmatic.shell.execution.ExecutionRequest;
 import io.pragmatic.shell.execution.ExecutionResult;
 import io.pragmatic.shell.execution.ProcessCommandExecutor;
 import io.pragmatic.shell.nlu.ContextTurn;
+import io.pragmatic.shell.nlu.EnvironmentProfile;
+import io.pragmatic.shell.nlu.EnvironmentProbe;
 import io.pragmatic.shell.nlu.LangChainNluService;
 import io.pragmatic.shell.nlu.NluResult;
 import io.pragmatic.shell.nlu.NluService;
@@ -55,6 +57,8 @@ public final class SmartCliShell {
     private final Map<String, String> envOverrides = new LinkedHashMap<>();
     /** 多轮对话上下文（FR-CTX-01）：会话内内存历史，退出即清空。 */
     private final ConversationContext context;
+    /** 环境指纹（环境感知）：会话内采集一次，注入语义模式 LLM 调用。 */
+    private volatile EnvironmentProfile profile;
 
     public SmartCliShell(AppConfig config) {
         this(config, resolveInitialMode(config));
@@ -75,6 +79,19 @@ public final class SmartCliShell {
                 config.getLogging().getAuditPath(), config.getLogging().isAuditEnabled());
         this.confirm = null; // terminal 在 start 内创建
         this.context = new ConversationContext(config.getLlm().getContext());
+        this.profile = probeProfile();
+    }
+
+    /** 采集环境指纹（环境感知）：profile.enabled=false 或采集异常时返回 null，不影响其它功能。 */
+    private EnvironmentProfile probeProfile() {
+        try {
+            if (config.getLlm().getProfile() == null || !config.getLlm().getProfile().isEnabled()) {
+                return null;
+            }
+            return new EnvironmentProbe(config.getLlm().getProfile()).probe();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /** 懒加载 NLU，仅在进入语义模式并实际调用 LLM 时初始化（避免直通模式下因缺少 API Key 崩溃）。 */
@@ -84,7 +101,7 @@ public final class SmartCliShell {
             synchronized (this) {
                 s = nlu;
                 if (s == null) {
-                    nlu = s = new LangChainNluService(config);
+                    nlu = s = new LangChainNluService(config, profile);
                 }
             }
         }
@@ -153,7 +170,7 @@ public final class SmartCliShell {
                 java.time.Duration.ofSeconds(config.getLlm().getTimeoutSeconds()));
         try {
             pi.start();
-            call = new CancelableNluCall(nlu(), line, context.snapshot(),
+            call = new CancelableNluCall(nlu(), line, context.snapshot(), profile,
                     config.getLlm().getTimeoutSeconds());
             NluResult result = call.await();   // 内部处理超时/取消（Ctrl+C 中断）
             pi.stop();
@@ -479,7 +496,7 @@ public final class SmartCliShell {
         String name = parts[0].substring(1).toLowerCase();
         switch (name) {
             case "help" -> out.println("/help 帮助  /exit 退出  /mode smart|direct 切换模式  /config 查看配置"
-                    + "  /context 查看多轮上下文  /clear 清空上下文");
+                    + "  /context 查看多轮上下文  /clear 清空上下文  /profile [refresh] 查看/刷新环境指纹");
             case "exit", "quit" -> {
                 out.println("再见。");
                 System.exit(0);
@@ -489,6 +506,7 @@ public final class SmartCliShell {
                 out.println("（多轮上下文已清空，后续对话不再引用此前轮次）");
             }
             case "context" -> printContext(out);
+            case "profile" -> handleProfile(parts, out);
             case "mode" -> {
                 if (parts.length > 1) {
                     if (parts[1].equalsIgnoreCase("smart") && !ConfigValidator.llmConfigured(config)) {
@@ -531,6 +549,25 @@ public final class SmartCliShell {
                 }
             }
         }
+        out.flush();
+    }
+
+    /** /profile [refresh]：查看当前环境指纹；带 refresh 则强制重新采集（环境感知）。 */
+    private void handleProfile(String[] parts, PrintWriter out) {
+        boolean refresh = parts.length > 1 && "refresh".equalsIgnoreCase(parts[1]);
+        if (refresh) {
+            profile = probeProfile();
+        }
+        if (profile == null) {
+            String reason = (config.getLlm().getProfile() != null && !config.getLlm().getProfile().isEnabled())
+                    ? "（llm.profile.enabled=false，已禁用环境指纹）"
+                    : "（环境指纹不可用，已降级：不向模型注入环境信息）";
+            out.println("（环境指纹为空 " + reason + "）");
+            out.flush();
+            return;
+        }
+        out.println("（环境指纹，采集于 " + profile.collectedAt() + "）");
+        out.println(profile.toPromptBlock());
         out.flush();
     }
 

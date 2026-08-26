@@ -25,6 +25,11 @@ llm:
     maxTurns: 10                # 保留最近轮数，≥ 1
     maxResultChars: 2000        # 单轮命令执行结果摘要上限（字符），≥ 100
 
+  profile:                      # 环境指纹（环境感知）
+    enabled: true               # 默认开启；false 时不采集、不注入环境信息
+    toolWhitelist: []           # 留空使用内置默认探测清单
+    toolProbeTimeoutMs: 200     # 单工具探测超时（毫秒）
+
 # ===== 命令执行 =====
 execution:
   defaultTimeoutSeconds: 60     # 命令执行超时（秒），≥ 1
