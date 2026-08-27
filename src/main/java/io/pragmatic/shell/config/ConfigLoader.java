@@ -28,9 +28,10 @@ public final class ConfigLoader {
     /** 已知字段全路径白名单（未知字段告警用，FR-13-04）。 */
     private static final Set<String> KNOWN_FIELDS = Set.of(
             "version",
-            "shell", "shell.initialMode",
+            "shell", "shell.initialMode", "shell.splash", "shell.splash.enabled",
             "llm", "llm.provider", "llm.baseUrl", "llm.model", "llm.temperature",
             "llm.apiKey", "llm.timeoutSeconds", "llm.showProgress",
+            "llm.defaultProfile", "llm.profiles",
             "llm.context", "llm.context.enabled", "llm.context.maxTurns", "llm.context.maxResultChars",
             "llm.profile", "llm.profile.enabled", "llm.profile.toolWhitelist", "llm.profile.toolProbeTimeoutMs",
             "execution", "execution.defaultTimeoutSeconds", "execution.workDir", "execution.readOnly",

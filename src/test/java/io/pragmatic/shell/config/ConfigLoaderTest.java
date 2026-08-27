@@ -130,4 +130,56 @@ class ConfigLoaderTest {
         assertEquals(home + "/x", ConfigLoader.expandHome("~/x"));
         assertEquals("relative/path", ConfigLoader.expandHome("relative/path"));
     }
+
+    @Test
+    void loadsMultiProfilesAndSplashWithoutUnknownWarning() throws Exception {
+        Path cfg = tempDir.resolve("config.yaml");
+        Files.writeString(cfg, """
+                version: 1
+                shell:
+                  splash:
+                    enabled: false
+                llm:
+                  defaultProfile: deep
+                  profiles:
+                    - id: deep
+                      provider: deepseek
+                      baseUrl: https://api.deepseek.com/v1
+                      model: deepseek-chat
+                      apiKey: sk-xxx
+                      timeoutSeconds: 60
+                    - id: local
+                      provider: ollama
+                      baseUrl: http://localhost:11434
+                      model: qwen3:8b
+                      timeoutSeconds: 120
+                """);
+        ConfigLoader.LoadResult r = ConfigLoader.load(cfg.toString());
+        // 新字段均为已知，不应告警
+        assertTrue(r.unknownFields().stream().noneMatch(f ->
+                f.startsWith("llm.profiles") || f.startsWith("llm.defaultProfile")
+                        || f.startsWith("shell.splash")));
+        assertEquals("deep", r.config().getLlm().getDefaultProfile());
+        assertEquals(2, r.config().getLlm().resolvedProfiles().size());
+        assertEquals("deep", r.config().getLlm().resolvedProfiles().get(0).getId());
+        assertEquals(120, r.config().getLlm().findProfile("local").getTimeoutSeconds());
+        assertEquals(false, r.config().getShell().getSplash().isEnabled());
+    }
+
+    @Test
+    void singleLegacyLlmSynthesizesInlineProfile() throws Exception {
+        Path cfg = tempDir.resolve("config.yaml");
+        Files.writeString(cfg, """
+                version: 1
+                llm:
+                  provider: openai
+                  baseUrl: https://api.openai.com/v1
+                  model: gpt-4o-mini
+                  apiKey: sk-legacy
+                """);
+        ConfigLoader.LoadResult r = ConfigLoader.load(cfg.toString());
+        assertEquals(1, r.config().getLlm().resolvedProfiles().size());
+        assertEquals("(inline)", r.config().getLlm().resolvedProfiles().get(0).getId());
+        assertTrue(r.config().getLlm().resolvedProfiles().get(0).isUsable());
+    }
 }

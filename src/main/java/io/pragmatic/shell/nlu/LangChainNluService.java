@@ -4,55 +4,30 @@ import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.model.chat.ChatLanguageModel;
-import dev.langchain4j.model.openai.OpenAiChatModel;
-import dev.langchain4j.model.ollama.OllamaChatModel;
-import io.pragmatic.shell.config.AppConfig;
 
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 基于 LangChain4j 的 NLU 实现（FR-02）。
- * - 按 provider 选择后端（deepseek / openai / ollama）
- * - system prompt 要求只返回纯命令或 UNSAFE / IMPOSSIBLE
- * - temperature=0.0 保证稳定
+ * 基于 LangChain4j 的 NLU 实现（FR-02 / 多模型接入 FR-MLLM-03）。
+ * - 持有 {@link ModelRegistry}，每次调用取当前激活 Profile 对应的客户端（切换即时生效）；
+ * - system prompt 要求只返回纯命令或 UNSAFE / IMPOSSIBLE；
+ * - temperature 由各 Profile 自行控制（默认 0.0 保证稳定）。
  */
 public final class LangChainNluService implements NluService {
 
-    private final ChatLanguageModel model;
+    private final ModelRegistry registry;
     private final String systemPrompt;
     private final EnvironmentProfile profile;
 
-    public LangChainNluService(AppConfig config) {
-        this(config, null);
+    public LangChainNluService(ModelRegistry registry) {
+        this(registry, null);
     }
 
-    public LangChainNluService(AppConfig config, EnvironmentProfile profile) {
-        this.model = buildModel(config);
+    public LangChainNluService(ModelRegistry registry, EnvironmentProfile profile) {
+        this.registry = registry;
         this.systemPrompt = loadSystemPrompt();
         this.profile = profile;
-    }
-
-    private ChatLanguageModel buildModel(AppConfig config) {
-        var llm = config.getLlm();
-        Duration timeout = Duration.ofSeconds(llm.getTimeoutSeconds());
-        return switch (LlmProvider.valueOf(llm.getProvider().toUpperCase())) {
-            case OLLAMA -> OllamaChatModel.builder()
-                    .baseUrl(llm.getBaseUrl())
-                    .modelName(llm.getModel())
-                    .temperature(llm.getTemperature())
-                    .timeout(timeout)
-                    .build();
-            case DEEPSEEK, OPENAI -> OpenAiChatModel.builder()
-                    .baseUrl(llm.getBaseUrl())
-                    .apiKey(llm.getApiKey())
-                    .modelName(llm.getModel())
-                    .temperature(llm.getTemperature())
-                    .timeout(timeout)
-                    .build();
-        };
     }
 
     private String loadSystemPrompt() {
@@ -90,7 +65,7 @@ public final class LangChainNluService implements NluService {
             appendTurn(messages, turn);
         }
         messages.add(new UserMessage(naturalLanguage));
-        var response = model.generate(messages);
+        var response = registry.currentModel().generate(messages);
         AiMessage msg = response.content();
         if (msg == null || msg.text() == null) {
             return NluResult.impossible();

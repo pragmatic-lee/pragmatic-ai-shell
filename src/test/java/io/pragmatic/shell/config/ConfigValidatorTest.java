@@ -2,6 +2,8 @@ package io.pragmatic.shell.config;
 
 import org.junit.jupiter.api.Test;
 
+import io.pragmatic.shell.config.model.LlmProfile;
+
 import java.nio.file.Path;
 import java.util.List;
 
@@ -125,5 +127,53 @@ class ConfigValidatorTest {
         for (String line : r.errors()) {
             assertFalse(line.contains("sk-super-secret-value"));
         }
+    }
+
+    /* ==================== 多模型接入（FR-MLLM）==================== */
+
+    private LlmProfile prof(String id, String provider, String apiKey) {
+        return new LlmProfile(id, provider, "http://x/v1", "m-" + id, 0.0, apiKey, 30);
+    }
+
+    @Test
+    void someProfileUsableNoDegrade() {
+        AppConfig c = AppConfig.defaults();
+        c.getLlm().setProfiles(List.of(prof("bad", "openai", null), prof("good", "deepseek", "sk-1")));
+        ConfigValidator.ValidationResult r = ConfigValidator.validate(load(c));
+        assertTrue(r.errors().isEmpty());
+        assertFalse(r.degradeToDirect());
+    }
+
+    @Test
+    void allProfilesUnusableDegrades() {
+        AppConfig c = AppConfig.defaults();
+        c.getLlm().setProfiles(List.of(prof("a", "openai", null), prof("b", "openai", null)));
+        ConfigValidator.ValidationResult r = ConfigValidator.validate(load(c));
+        assertTrue(r.degradeToDirect());
+    }
+
+    @Test
+    void duplicateProfileIdIsFatal() {
+        AppConfig c = AppConfig.defaults();
+        c.getLlm().setProfiles(List.of(prof("dup", "deepseek", "k"), prof("dup", "openai", "k")));
+        ConfigValidator.ValidationResult r = ConfigValidator.validate(load(c));
+        assertTrue(r.errors().stream().anyMatch(e -> e.contains("llm.profiles") && e.contains("重复")));
+    }
+
+    @Test
+    void defaultProfilePointingUnusableIsFatal() {
+        AppConfig c = AppConfig.defaults();
+        c.getLlm().setProfiles(List.of(prof("good", "deepseek", "k"), prof("bad", "openai", null)));
+        c.getLlm().setDefaultProfile("bad");
+        ConfigValidator.ValidationResult r = ConfigValidator.validate(load(c));
+        assertTrue(r.errors().stream().anyMatch(e -> e.contains("llm.defaultProfile")));
+    }
+
+    @Test
+    void invalidProfileProviderIsFatal() {
+        AppConfig c = AppConfig.defaults();
+        c.getLlm().setProfiles(List.of(prof("x", "gpt", "k")));
+        ConfigValidator.ValidationResult r = ConfigValidator.validate(load(c));
+        assertTrue(r.errors().stream().anyMatch(e -> e.contains("llm.profiles[0].provider")));
     }
 }

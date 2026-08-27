@@ -6,6 +6,8 @@ package io.pragmatic.shell.config.model;
  */
 public class ShellConfig {
     private String initialMode = "smart";
+    /** 启动界面配置（FR-SPLASH）：默认开启线框 Splash。 */
+    private SplashConfig splash = new SplashConfig();
 
     public ShellConfig() {
     }
@@ -18,8 +20,16 @@ public class ShellConfig {
         this.initialMode = initialMode;
     }
 
+    public SplashConfig getSplash() {
+        return splash;
+    }
+
+    public void setSplash(SplashConfig splash) {
+        this.splash = splash;
+    }
+
     @Override
     public String toString() {
-        return "ShellConfig{initialMode='" + initialMode + "'}";
+        return "ShellConfig{initialMode='" + initialMode + "', splash=" + splash + '}';
     }
 }

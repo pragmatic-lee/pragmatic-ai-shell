@@ -12,6 +12,8 @@ import io.pragmatic.shell.nlu.ContextTurn;
 import io.pragmatic.shell.nlu.EnvironmentProfile;
 import io.pragmatic.shell.nlu.EnvironmentProbe;
 import io.pragmatic.shell.nlu.LangChainNluService;
+import io.pragmatic.shell.nlu.ModelRegistry;
+import io.pragmatic.shell.config.model.LlmProfile;
 import io.pragmatic.shell.nlu.NluResult;
 import io.pragmatic.shell.nlu.NluService;
 import io.pragmatic.shell.safety.FilterVerdict;
@@ -33,6 +35,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.TimeoutException;
@@ -44,6 +47,7 @@ import java.util.concurrent.TimeoutException;
 public final class SmartCliShell {
 
     private final AppConfig config;
+    private final ModelRegistry registry;
     private volatile NluService nlu;
     private final CommandExecutor executor;
     private final SafetyFilterChain safety;
@@ -79,6 +83,7 @@ public final class SmartCliShell {
                 config.getLogging().getAuditPath(), config.getLogging().isAuditEnabled());
         this.confirm = null; // terminal 在 start 内创建
         this.context = new ConversationContext(config.getLlm().getContext());
+        this.registry = new ModelRegistry(config);
         this.profile = probeProfile();
     }
 
@@ -94,18 +99,31 @@ public final class SmartCliShell {
         }
     }
 
-    /** 懒加载 NLU，仅在进入语义模式并实际调用 LLM 时初始化（避免直通模式下因缺少 API Key 崩溃）。 */
+    /** 懒加载 NLU，仅在进入语义模式并实际调用 LLM 时初始化（避免直通模式下因缺少 API Key 崩溃）。
+     * NLU 持有 registry，切换激活 Profile 后无需重建。 */
     private NluService nlu() {
         NluService s = nlu;
         if (s == null) {
             synchronized (this) {
                 s = nlu;
                 if (s == null) {
-                    nlu = s = new LangChainNluService(config, profile);
+                    nlu = s = new LangChainNluService(registry, profile);
                 }
             }
         }
         return s;
+    }
+
+    /** 渲染启动界面（FR-SPLASH）：splash.enabled=false 或非交互终端时跳过，仅保留纯文本欢迎语。 */
+    private void renderSplash(java.io.PrintWriter out, Terminal terminal) {
+        boolean enabled = config.getShell() == null || config.getShell().getSplash() == null
+                || config.getShell().getSplash().isEnabled();
+        boolean interactive = !"dumb".equals(terminal.getType()) && System.console() != null;
+        if (!enabled || !interactive) {
+            return;
+        }
+        boolean degraded = !ConfigValidator.llmConfigured(config);
+        SplashScreen.render(out, config, registry, profile, mode, degraded, List.of());
     }
 
     public void start() throws Exception {
@@ -122,6 +140,8 @@ public final class SmartCliShell {
                 .option(LineReader.Option.DISABLE_EVENT_EXPANSION, true)
                 .build();
         ConfirmationPrompt confirm = new ConfirmationPrompt(terminal, reader);
+
+        renderSplash(out, terminal);
 
         out.println("🤖 Smart CLI v1.0 已启动（" + (mode == ShellMode.SMART ? "语义" : "直通") + "模式）");
         out.println("输入 /help 查看帮助，! 开头直接进入直通模式");
@@ -163,15 +183,15 @@ public final class SmartCliShell {
             directExecute(cmd, terminal, confirm, "USER", line);
             return;
         }
-        // 语义模式：异步调用 + 进度指示器 + 可取消（FR-WAIT 系列）
+        // 语义模式：异步调用 + 进度指示器 + 可取消（FR-WAIT 系列）；超时取当前激活 Profile（FR-MLLM）
+        long llmTimeout = activeTimeoutSeconds();
         CancelableNluCall call = null;
         ProgressIndicator pi = new SpinnerProgressIndicator(
                 out, config.getLlm().isShowProgress(),
-                java.time.Duration.ofSeconds(config.getLlm().getTimeoutSeconds()));
+                java.time.Duration.ofSeconds(llmTimeout));
         try {
             pi.start();
-            call = new CancelableNluCall(nlu(), line, context.snapshot(), profile,
-                    config.getLlm().getTimeoutSeconds());
+            call = new CancelableNluCall(nlu(), line, context.snapshot(), profile, llmTimeout);
             NluResult result = call.await();   // 内部处理超时/取消（Ctrl+C 中断）
             pi.stop();
             switch (result.status()) {
@@ -198,7 +218,7 @@ public final class SmartCliShell {
         } catch (TimeoutException e) {
             pi.stop();
             context.add(ContextTurn.modelRefused(line, "（模型调用超时）"));
-            out.println("模型响应超时（" + config.getLlm().getTimeoutSeconds() + "s）。");
+            out.println("模型响应超时（" + llmTimeout + "s）。");
             downgradeToDirect(out, "超时");
         } catch (Exception e) {
             pi.stop();
@@ -213,10 +233,26 @@ public final class SmartCliShell {
         }
     }
 
-    /** 降级到直通模式（FR-WAIT-04/05：异常/超时后进入直通，而非崩溃）。 */
+    /** 降级到直通模式（FR-WAIT-04/05：异常/超时后进入直通，而非崩溃）。
+     * 若存在其他可用 Profile，先静态提示可切换（不预检，v1.1 决议 4）。 */
     private void downgradeToDirect(PrintWriter out, String reason) {
+        List<LlmProfile> others = registry.otherUsableProfiles();
+        if (!others.isEmpty()) {
+            StringBuilder ids = new StringBuilder();
+            for (LlmProfile p : others) {
+                ids.append(ids.length() == 0 ? "" : ", ").append(p.getId());
+            }
+            out.println("提示: 可输入 /model switch <id> 切换其他模型（可用: " + ids
+                    + "），或继续降级直通。");
+        }
         out.println("[降级] 语义能力不可用（" + reason + "），已切换为直通模式。后续命令将直接执行。");
         mode = ShellMode.DIRECT;
+    }
+
+    /** 当前激活 Profile 的超时（秒）；无激活项时回退 llm 顶层配置。 */
+    private long activeTimeoutSeconds() {
+        LlmProfile p = registry.activeProfile();
+        return p != null ? p.getTimeoutSeconds() : config.getLlm().getTimeoutSeconds();
     }
 
     private void routeSmart(String command, String input, Terminal terminal, ConfirmationPrompt confirm) {
@@ -496,7 +532,8 @@ public final class SmartCliShell {
         String name = parts[0].substring(1).toLowerCase();
         switch (name) {
             case "help" -> out.println("/help 帮助  /exit 退出  /mode smart|direct 切换模式  /config 查看配置"
-                    + "  /context 查看多轮上下文  /clear 清空上下文  /profile [refresh] 查看/刷新环境指纹");
+                    + "  /model [switch <id>|check [id]] 多模型管理  /context 查看多轮上下文"
+                    + "  /clear 清空上下文  /profile [refresh] 查看/刷新环境指纹");
             case "exit", "quit" -> {
                 out.println("再见。");
                 System.exit(0);
@@ -518,6 +555,7 @@ public final class SmartCliShell {
                 out.println("当前模式: " + mode);
             }
             case "config" -> out.println(config.toDisplayString());
+            case "model" -> handleModel(parts, out);
             default -> out.println("未知内置命令: " + name + "，输入 /help 查看帮助");
         }
         out.flush();
@@ -572,8 +610,76 @@ public final class SmartCliShell {
     }
 
     private AuditEntry entry(String source, String input, String command, int exitCode, long durationMs) {
+        String model = "LLM".equals(source) && registry.activeProfile() != null
+                ? registry.activeProfile().displayLabel() : null;
         return new AuditEntry(
                 DateTimeFormatter.ISO_INSTANT.format(Instant.now()),
-                source, input, command, exitCode, durationMs);
+                source, input, command, exitCode, durationMs, model);
+    }
+
+    /** /model [switch <id>|check [id]]：多模型列表/切换/健康检查（FR-MLLM-05/06）。 */
+    private void handleModel(String[] parts, PrintWriter out) {
+        String sub = parts.length > 1 ? parts[1].toLowerCase() : "list";
+        switch (sub) {
+            case "switch" -> doModelSwitch(parts, out);
+            case "check" -> doModelCheck(parts, out);
+            default -> printModelList(out);
+        }
+    }
+
+    private void printModelList(PrintWriter out) {
+        LlmProfile active = registry.activeProfile();
+        out.printf("   %-10s %-30s %-8s %s%n", "ID", "PROVIDER/MODEL", "TIMEOUT", "STATUS");
+        for (LlmProfile p : registry.profiles()) {
+            String check = (p == active) ? "✓" : " ";
+            String status = p.isUsable() ? "可用" : p.unusableReason();
+            out.printf(" %s %-10s %-30s %-7s %s%n", check, p.getId(), p.displayLabel(),
+                    p.getTimeoutSeconds() + "s", status);
+        }
+        out.println("提示: /model switch <id> 切换 · /model check [id] 健康检查");
+    }
+
+    private void doModelSwitch(String[] parts, PrintWriter out) {
+        if (parts.length < 3) {
+            out.println("用法: /model switch <id>");
+            return;
+        }
+        String id = parts[2];
+        LlmProfile target = registry.find(id);
+        if (target == null) {
+            out.println("❌ 未知模型 id: " + id + "，输入 /model 查看列表。");
+            return;
+        }
+        if (!target.isUsable()) {
+            out.println("❌ 模型 " + id + " 不可用（" + target.unusableReason() + "），无法切换。");
+            return;
+        }
+        registry.switchTo(id);
+        out.println("已切换至 " + id + "（" + target.displayLabel() + "）");
+    }
+
+    private void doModelCheck(String[] parts, PrintWriter out) {
+        LlmProfile target;
+        if (parts.length >= 3) {
+            target = registry.find(parts[2]);
+            if (target == null) {
+                out.println("❌ 未知模型 id: " + parts[2]);
+                return;
+            }
+        } else {
+            target = registry.activeProfile();
+            if (target == null) {
+                out.println("无可用的激活 Profile。");
+                return;
+            }
+        }
+        out.println("正在检查 " + target.getId() + "（" + target.displayLabel() + "）…");
+        out.flush();
+        ModelRegistry.CheckResult r = registry.check(target);
+        if (r.ok()) {
+            out.println("✅ " + target.getId() + " 可用（耗时 " + r.durationMs() + "ms）");
+        } else {
+            out.println("❌ " + target.getId() + " 不可用：" + r.error());
+        }
     }
 }

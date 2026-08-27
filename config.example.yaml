@@ -10,8 +10,13 @@ version: 1                      # 配置版本，与程序支持版本比对（F
 # ===== 启动行为 =====
 shell:
   initialMode: smart            # 启动模式: smart（语义）| direct（直通），缺省 smart
+  splash:
+    enabled: true               # 启动界面总开关（FR-SPLASH）；非 TTY 自动降级为纯文本
 
 # ===== LLM 后端（语义模式必填）=====
+# 支持两种写法（二选一）：
+#   A. 单模型（向后兼容）：直接写 provider/baseUrl/model/apiKey，自动合成 id=(inline)
+#   B. 多模型：声明 defaultProfile + profiles 列表，启动激活默认项，运行中用 /model switch 切换
 llm:
   provider: openai              # deepseek | openai | ollama
   baseUrl: https://api.openai.com/v1
@@ -20,7 +25,21 @@ llm:
   apiKey: sk-REPLACE_ME         # 语义模式必填；缺失时启动自动降级为直通模式
   timeoutSeconds: 60            # LLM 调用超时（秒），≥ 1
   showProgress: true            # 语义模式等待动画开关
-  context:                      # 多轮对话上下文（FR-CTX-07）
+  # --- 多模型写法（可选，取消注释即启用；启用后以上顶层单模型字段被忽略）---
+  # defaultProfile: deep        # 缺省激活的 Profile id
+  # profiles:                   # 每个 Profile 含 id/provider/baseUrl/model/temperature/apiKey/timeoutSeconds
+  #   - id: deep
+  #     provider: deepseek
+  #     baseUrl: https://api.deepseek.com/v1
+  #     model: deepseek-chat
+  #     apiKey: sk-xxxx
+  #     timeoutSeconds: 60
+  #   - id: local
+  #     provider: ollama
+  #     baseUrl: http://localhost:11434
+  #     model: qwen3:8b
+  #     timeoutSeconds: 120
+  context:                      # 多轮对话上下文（FR-CTX-07）：全局共享，不下沉到 Profile
     enabled: true               # 默认开启；false 时每次调用独立（v2 无上下文行为）
     maxTurns: 10                # 保留最近轮数，≥ 1
     maxResultChars: 2000        # 单轮命令执行结果摘要上限（字符），≥ 100
