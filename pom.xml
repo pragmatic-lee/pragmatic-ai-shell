@@ -130,4 +130,65 @@
             </plugin>
         </plugins>
     </build>
+
+    <!--
+        GraalVM Native Image 构建（推荐用 profile 隔离常规 jar 与 native 构建）。
+        用法：
+            1) 确保使用 GraalVM 并安装 native-image：
+               $JAVA_HOME/bin/gu install native-image
+            2) mvn package -Pnative
+            3) 产物：target/pragmatic-ai-shell （可直接运行的二进制）
+        说明：
+            - mainClass 必须指向应用入口 SmartCliApplication。
+            - 本项目使用 JLine / langchain4j / Jackson / SnakeYAML 等，
+              含大量反射、动态代理、资源加载，native 构建需要反射元数据。
+              插件会自动收集编译期可达的元数据；复杂场景请在
+              src/main/resources/META-INF/native-image/ 下补充：
+                reflect-config.json / proxy-config.json / resource-config.json / jni-config.json
+            - 构建较慢且吃内存，必要时：
+              MAVEN_OPTS="-Xmx4g" mvn package -Pnative
+    -->
+    <profiles>
+        <profile>
+            <id>native</id>
+            <build>
+                <plugins>
+                    <!-- native 构建时跳过 shade，避免与 native image 争抢 package 阶段 -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-shade-plugin</artifactId>
+                        <version>3.5.3</version>
+                        <executions>
+                            <execution>
+                                <phase>none</phase>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <version>0.10.3</version>
+                        <configuration>
+                            <mainClass>io.pragmatic.shell.SmartCliApplication</mainClass>
+                            <imageName>pragmatic-ai-shell</imageName>
+                            <buildArgs>
+                                <buildArg>-H:+ReportExceptionStackTraces</buildArg>
+                                <!-- 启动期初始化 JLine/Logback 等，减少运行时反射问题 -->
+                                <buildArg>-H:+ReportUnsupportedElementsAtRuntime</buildArg>
+                            </buildArgs>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>build-native</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

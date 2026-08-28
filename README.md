@@ -102,6 +102,73 @@ java --enable-final-field-mutation=ALL-UNNAMED \
 
 > v4 起启动参数仅保留 `--config`：启动模式与只读开关等初始化项全部由 `config.yaml` 配置。
 
+## 📦 构建 Native 可执行文件（GraalVM）
+
+smartcli 支持用 GraalVM 的 `native-image` 编译为**无需 JDK 的原生二进制**（macOS / Linux / Windows），启动快、内存占用低。
+
+### 前置条件（重要）
+
+- **必须使用 GraalVM 21+**，不能用 Corretto / 系统 JDK。本项目依赖 JLine 3.26.3、langchain4j、Jackson、picocli 等，其自带的 native-image 元数据需要较新的 GraalVM；**GraalVM 17.0.7 会因不识别 `UnlockExperimentalVMOptions` 而构建失败**。
+- GraalVM 21+ 的 `native-image` **已捆绑在发行包内，无需 `gu install`**。
+- 源码字节码级别仍为 17（`pom.xml` 中 `maven.compiler.source/target=17`），由新版 GraalVM 编译成 native image 完全兼容（低字节码 + 高编译器，安全）。
+
+### 切换工具链（以 jenv 为例）
+
+```bash
+jenv shell graalvm64-21.0.2          # 或 jenv local graalvm64-21.0.2
+export JAVA_HOME="$HOME/.jenv/versions/graalvm64-21.0.2"
+export PATH="$JAVA_HOME/bin:$PATH"
+native-image --version               # 应输出版本信息，确认可用
+```
+
+> 未用 jenv 时，直接 `export JAVA_HOME=<GraalVM21 解压目录>/Contents/Home` 并加入 `PATH` 即可。
+
+### 构建
+
+```bash
+mvn package -Pnative -DskipTests     # 跳过测试加速；如需测试去掉 -DskipTests
+# 内存不足时：MAVEN_OPTS="-Xmx4g" mvn package -Pnative -DskipTests
+```
+
+- 构建由 `pom.xml` 中的 `native` profile 控制（`native-maven-plugin` 0.10.3）。
+- `native` profile 下会自动**跳过 `maven-shade-plugin`**，避免与 native image 争夺 `package` 阶段。
+- 产物：`target/pragmatic-ai-shell`（macOS 上为 Mach-O arm64 原生可执行文件）。
+
+### 运行
+
+```bash
+./target/pragmatic-ai-shell --help    # 验证可用
+./target/pragmatic-ai-shell --config config.yaml
+```
+
+> 用法与 `java -jar` 完全一致：启动参数、`config.yaml` 字段结构均不变，只是无需 JDK。
+
+### 随 binary 分发的启动脚本（推荐，免 PATH）
+
+项目提供 `bin/pragmatic-ai-shell.sh`，**基于脚本自身所在目录**查找二进制与配置，可把脚本与编译产物一起拷贝到任意目录/机器直接使用，无需加入 `PATH`：
+
+```
+某目录/
+├── pragmatic-ai-shell        # 编译好的二进制（target/pragmatic-ai-shell）
+├── pragmatic-ai-shell.sh     # bin/pragmatic-ai-shell.sh
+└── config.yaml               # 可选，放同目录则自动加载
+```
+
+```bash
+sh pragmatic-ai-shell.sh                 # 自动用同目录 config.yaml
+./pragmatic-ai-shell.sh --config x.yaml  # 或显式指定
+./pragmatic-ai-shell.sh --help
+```
+
+脚本逻辑：二进制与 config 默认都在脚本同目录；未传 `--config` 且同目录有 `config.yaml` 时自动带上；二进制缺失会给出提示。跨平台分发注意：二进制是 macOS arm64，换平台（Linux/Windows）需对应 GraalVM 重新构建。
+
+### 已知坑（Native 专属）
+
+- **picocli `AutoHelpMixin` 反射缺失**：picocli 4.7.6 未自带 native-image 元数据，`--help` 在 native 下会抛 `InitializationException`。已在 `src/main/resources/META-INF/native-image/reflect-config.json` 中注册 `SmartCliApplication` 与 `picocli.CommandLine$AutoHelpMixin` / `$HelpCommand` 修复。
+- **SnakeYAML 配置反序列化反射缺失**：native 下 `AppConfig` 及 `config.model` 下 8 个配置类需可被反射实例化，否则报 `NoSuchMethodException: <init>()`。已在上述 `reflect-config.json` 中全部注册（构造器 / 字段 / 方法）。
+- **JLine / Jackson / logback 反射与资源**：插件会自动收集大部分可达元数据，复杂动态路径若报错，在该目录下补充 `proxy-config.json` / `resource-config.json` 即可。
+- **构建较慢且吃内存**：首次构建约 1–3 分钟，建议 `MAVEN_OPTS="-Xmx4g"`。
+
 ## 📖 使用方式
 
 ### 语义模式（默认，提示符 🤖）
