@@ -29,17 +29,24 @@ public final class ProcessCommandExecutor implements CommandExecutor {
     private static final List<String> CONTAINER_CLIS =
             List.of("docker", "podman", "nerdctl", "crictl", "kubectl");
 
+    /** 输出捕获上限默认值（FR-CTX-02，与 llm.context.maxResultChars 默认一致）。 */
+    public static final int DEFAULT_MAX_OUTPUT_CHARS = 2000;
+
     private final Appendable console;
     private final int maxOutputChars;
 
-    /** 输出捕获上限取默认值 2000 字符（FR-CTX-02，与 llm.context.maxResultChars 默认一致）。 */
+    /** 输出捕获上限取默认值 2000 字符。 */
     public ProcessCommandExecutor(Appendable console) {
-        this(console, 2000);
+        this(console, DEFAULT_MAX_OUTPUT_CHARS);
     }
 
+    /**
+     * @param maxOutputChars 输出捕获上限（字符）；≤ 0 表示采用 {@link #DEFAULT_MAX_OUTPUT_CHARS}
+     *                       （配置缺省或非法值时的兜底，避免退化成只捕获 1 个字符）
+     */
     public ProcessCommandExecutor(Appendable console, int maxOutputChars) {
         this.console = console;
-        this.maxOutputChars = Math.max(1, maxOutputChars);
+        this.maxOutputChars = maxOutputChars > 0 ? maxOutputChars : DEFAULT_MAX_OUTPUT_CHARS;
     }
 
     @Override
@@ -62,6 +69,14 @@ public final class ProcessCommandExecutor implements CommandExecutor {
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
             Process process = pb.start();
+            // 非交互命令不提供输入：立即关闭子进程 stdin，使其读到 EOF 而非无限阻塞（P0-1）。
+            // 管道仅当写入端全部关闭时才产生 EOF；父进程若一直持有写入端，cat/sort/grep 等
+            // 读取 stdin 的命令会阻塞至超时才被强杀。关闭后行为等同于在原生终端按下 Ctrl+D。
+            try {
+                process.getOutputStream().close();
+            } catch (IOException ignored) {
+                // 流已关闭或不支持写入（如已重定向）时忽略，不影响后续执行
+            }
             StreamPump outPump = new StreamPump(process.getInputStream(), console, maxOutputChars);
             StreamPump errPump = new StreamPump(process.getErrorStream(), console, maxOutputChars);
             Future<?> outF = pool.submit(outPump);

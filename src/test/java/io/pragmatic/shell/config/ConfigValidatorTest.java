@@ -22,7 +22,7 @@ class ConfigValidatorTest {
     }
 
     private ConfigLoader.LoadResult load(AppConfig c) {
-        return new ConfigLoader.LoadResult(c, Path.of("/tmp/config.yaml"), List.of());
+        return new ConfigLoader.LoadResult(c, Path.of("/tmp/config.yaml"), List.of(), false);
     }
 
     @Test
@@ -80,7 +80,7 @@ class ConfigValidatorTest {
     @Test
     void unknownFieldsProduceWarning() {
         ConfigLoader.LoadResult lr = new ConfigLoader.LoadResult(
-                validConfig(), Path.of("/tmp/config.yaml"), List.of("llm.apikey"));
+                validConfig(), Path.of("/tmp/config.yaml"), List.of("llm.apikey"), false);
         ConfigValidator.ValidationResult r = ConfigValidator.validate(lr);
         assertTrue(r.warnings().stream().anyMatch(w -> w.contains("llm.apikey") && w.contains("未知字段")));
     }

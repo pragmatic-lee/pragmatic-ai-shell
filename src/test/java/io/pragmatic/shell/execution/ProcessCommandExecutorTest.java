@@ -59,6 +59,78 @@ class ProcessCommandExecutorTest {
     }
 
     @Test
+    void configuredMaxOutputCharsIsRespected() {
+        // 生成约 2800 字符输出：超过默认上限 2000，但低于 5000。
+        // 用 5000 构造应完整捕获（无截断标记），用默认构造应触发截断 —— 证明配置真正生效。
+        String script = "for i in $(seq 1 200); do echo line-$i-xxxx; done";
+
+        StringBuilder outLarge = new StringBuilder();
+        ExecutionResult large = new ProcessCommandExecutor(outLarge, 5000).execute(
+                new ExecutionRequest(script, Path.of("/tmp"), Duration.ofSeconds(20), null));
+        assertEquals(0, large.exitCode());
+        assertFalse(large.output().startsWith("…"),
+                "上限 5000 时约 2800 字符输出不应触发截断, 实际开头: " + large.output().substring(0, 20));
+
+        StringBuilder outDefault = new StringBuilder();
+        ExecutionResult def = new ProcessCommandExecutor(outDefault).execute(
+                new ExecutionRequest(script, Path.of("/tmp"), Duration.ofSeconds(20), null));
+        assertEquals(0, def.exitCode());
+        assertTrue(def.output().startsWith("…"),
+                "默认上限 2000 时应触发截断（对照组）");
+
+        assertTrue(large.output().length() > def.output().length(),
+                "配置更大的上限应捕获更多内容: " + large.output().length() + " vs " + def.output().length());
+    }
+
+    @Test
+    void nonPositiveMaxOutputCharsFallsBackToDefault() {
+        StringBuilder out = new StringBuilder();
+        // ≤ 0 应回退为默认上限，而非退化成只捕获 1 个字符
+        ProcessCommandExecutor executor = new ProcessCommandExecutor(out, 0);
+        ExecutionResult result = executor.execute(new ExecutionRequest(
+                "echo fallback-check-marker", Path.of("/tmp"), Duration.ofSeconds(10), null));
+        assertEquals(0, result.exitCode());
+        assertTrue(result.output().contains("fallback-check-marker"),
+                "回退默认值后应能捕获完整输出, 实际: " + result.output());
+    }
+
+    @Test
+    void stdinReadingCommandReturnsImmediately() {
+        StringBuilder out = new StringBuilder();
+        ProcessCommandExecutor executor = new ProcessCommandExecutor(out);
+        long start = System.currentTimeMillis();
+        // cat 不带文件参数会读取 stdin；修复前会阻塞至超时，修复后应立即 EOF 退出
+        ExecutionResult result = executor.execute(new ExecutionRequest(
+                "cat", Path.of("/tmp"), Duration.ofSeconds(3), null));
+        long elapsed = System.currentTimeMillis() - start;
+        assertFalse(result.timedOut(), "cat 应立即读到 EOF 退出，而非阻塞到超时");
+        assertEquals(0, result.exitCode());
+        assertTrue(elapsed < 3000, "应立即返回，实际耗时: " + elapsed + "ms");
+    }
+
+    @Test
+    void stdinReadingCommandKeepsOwnExitCode() {
+        StringBuilder out = new StringBuilder();
+        ProcessCommandExecutor executor = new ProcessCommandExecutor(out);
+        // grep 无匹配时退出码为 1；修复前会因阻塞超时返回 -1
+        ExecutionResult result = executor.execute(new ExecutionRequest(
+                "grep zzz-no-such-pattern", Path.of("/tmp"), Duration.ofSeconds(3), null));
+        assertFalse(result.timedOut());
+        assertEquals(1, result.exitCode(), "grep 无匹配应返回自身退出码 1，不应被超时掩盖");
+    }
+
+    @Test
+    void pipedInputStillWorks() {
+        StringBuilder out = new StringBuilder();
+        ProcessCommandExecutor executor = new ProcessCommandExecutor(out);
+        // 命令内部的管道由 shell 自建，不受 stdin 关闭影响
+        ExecutionResult result = executor.execute(new ExecutionRequest(
+                "printf 'b\\na\\n' | sort", Path.of("/tmp"), Duration.ofSeconds(10), null));
+        assertEquals(0, result.exitCode());
+        assertTrue(out.toString().contains("a"), "内部管道应正常工作, 实际输出: " + out);
+    }
+
+    @Test
     void timeoutDestroysWholeProcessTree() throws Exception {
         StringBuilder out = new StringBuilder();
         ProcessCommandExecutor executor = new ProcessCommandExecutor(out);

@@ -47,7 +47,11 @@ import java.util.concurrent.TimeoutException;
 public final class SmartCliShell {
 
     private final AppConfig config;
-    private final ModelRegistry registry;
+    private final java.nio.file.Path configPath;
+    /** REPL 行读取器（start 内创建，供 /setup 向导复用）。 */
+    private LineReader reader;
+    /** /setup 保存配置后需重建，故非 final。 */
+    private ModelRegistry registry;
     private volatile NluService nlu;
     private final CommandExecutor executor;
     private final SafetyFilterChain safety;
@@ -68,16 +72,37 @@ public final class SmartCliShell {
         this(config, resolveInitialMode(config));
     }
 
+    /**
+     * 解析输出捕获上限（P0-2）：取 llm.context.maxResultChars，
+     * context 缺失或值非法（≤ 0）时返回 0，由执行器按自身默认值兜底。
+     */
+    private static int resolveMaxOutputChars(AppConfig config) {
+        var ctx = config.getLlm() == null ? null : config.getLlm().getContext();
+        if (ctx == null) {
+            return 0;
+        }
+        int max = ctx.getMaxResultChars();
+        return max > 0 ? max : 0;
+    }
+
     /** 从 shell.initialMode 解析初始模式（缺省/非法值回退语义模式，v4 FR-14）。 */
     private static ShellMode resolveInitialMode(AppConfig config) {
         String mode = config.getShell() != null ? config.getShell().getInitialMode() : null;
         return "direct".equalsIgnoreCase(mode) ? ShellMode.DIRECT : ShellMode.SMART;
     }
 
+    /** 兼容构造：未知配置文件路径（/setup 保存功能不可用）。 */
     public SmartCliShell(AppConfig config, ShellMode initialMode) {
+        this(config, initialMode, null);
+    }
+
+    public SmartCliShell(AppConfig config, ShellMode initialMode, java.nio.file.Path configPath) {
         this.config = config;
+        this.configPath = configPath;
         this.mode = initialMode;
-        this.executor = new ProcessCommandExecutor(System.out);
+        // 输出捕获上限取自 llm.context.maxResultChars（P0-2）：此前使用单参构造固定 2000，
+        // 导致该配置项修改后不生效。context 缺省时回退到执行器默认上限。
+        this.executor = new ProcessCommandExecutor(System.out, resolveMaxOutputChars(config));
         this.safety = new SafetyFilterChain(config);
         this.audit = new io.pragmatic.shell.audit.FileAuditLogger(
                 config.getLogging().getAuditPath(), config.getLogging().isAuditEnabled());
@@ -139,12 +164,16 @@ public final class SmartCliShell {
                 .completer(completer)
                 .option(LineReader.Option.DISABLE_EVENT_EXPANSION, true)
                 .build();
+        this.reader = reader;
         ConfirmationPrompt confirm = new ConfirmationPrompt(terminal, reader);
 
         renderSplash(out, terminal);
 
         out.println("🤖 Smart CLI v1.0 已启动（" + (mode == ShellMode.SMART ? "语义" : "直通") + "模式）");
         out.println("输入 /help 查看帮助，! 开头直接进入直通模式");
+        if (!ConfigValidator.llmConfigured(config)) {
+            printOnboardingBanner(out);
+        }
         out.flush();
 
         while (true) {
@@ -533,7 +562,8 @@ public final class SmartCliShell {
         switch (name) {
             case "help" -> out.println("/help 帮助  /exit 退出  /mode smart|direct 切换模式  /config 查看配置"
                     + "  /model [switch <id>|check [id]] 多模型管理  /context 查看多轮上下文"
-                    + "  /clear 清空上下文  /profile [refresh] 查看/刷新环境指纹");
+                    + "  /clear 清空上下文  /profile [refresh] 查看/刷新环境指纹"
+                    + "  /setup 引导配置大模型");
             case "exit", "quit" -> {
                 out.println("再见。");
                 System.exit(0);
@@ -556,9 +586,47 @@ public final class SmartCliShell {
             }
             case "config" -> out.println(config.toDisplayString());
             case "model" -> handleModel(parts, out);
+            case "setup" -> handleSetup(terminal, out);
             default -> out.println("未知内置命令: " + name + "，输入 /help 查看帮助");
         }
         out.flush();
+    }
+
+    /** /setup：启动 LLM 配置向导，保存后落盘并重建 ModelRegistry（FR-SETUP-01/05/06）。 */
+    private void handleSetup(Terminal terminal, PrintWriter out) {
+        if (configPath == null) {
+            out.println("（未知配置文件路径，无法保存；请通过 --config 指定配置文件后重启）");
+            return;
+        }
+        if (reader == null) {
+            out.println("（终端尚未就绪，请稍后重试）");
+            return;
+        }
+        SetupWizard wizard = new SetupWizard(terminal, reader, config.getLlm());
+        if (!wizard.run()) {
+            return;
+        }
+        try {
+            java.nio.file.Path backup =
+                    io.pragmatic.shell.config.ConfigWriter.mergeLlmAndWrite(configPath, config.getLlm());
+            this.registry = new ModelRegistry(config);
+            this.nlu = null; // 触发懒重建，后续调用使用新 registry
+            out.println("已保存到 " + configPath + "（原文件已备份为 " + backup.getFileName() + "）");
+            out.println("执行 /mode smart 启用语义模式，或重启生效；/model 可查看与切换模型。");
+        } catch (Exception e) {
+            out.println("（保存失败: " + e.getMessage() + "）");
+        }
+        out.flush();
+    }
+
+    /** 首次使用引导横幅（FR-BANNER-01）：无可用 LLM 时给出可直接尝试的命令，不阻塞输入。 */
+    private void printOnboardingBanner(PrintWriter out) {
+        out.println("─────────────────────────────────────────────");
+        out.println("欢迎使用 smartcli：当前未配置大模型，以直通模式运行。");
+        out.println("  ! ls          直接执行 shell 命令（! 开头）");
+        out.println("  /setup        引导配置你的大模型");
+        out.println("  /help         查看全部命令");
+        out.println("─────────────────────────────────────────────");
     }
 
     /** /context：展示当前多轮上下文轮次（FR-CTX-05-02，内容在入史时已脱敏）。 */

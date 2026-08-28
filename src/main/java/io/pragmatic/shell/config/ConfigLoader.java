@@ -15,8 +15,10 @@ import java.util.Set;
 /**
  * 使用 SnakeYAML 加载 config.yaml 为 AppConfig（v4：强制加载，FR-12）。
  * - 未指定 --config 时默认加载进程启动目录下的 config.yaml；
- * - 文件缺失 / 不可读 / 解析失败 / 为空一律抛出 {@link ConfigLoadException}，
- *   由启动入口报错退出，不再静默回退内置默认值；
+ * - 文件缺失时：仅在 {@code generateIfMissing=true}（首次启动场景，FR-ZERO-01）
+ *   自动生成默认配置文件并继续；否则仍抛 {@link ConfigLoadException} 报错退出；
+ * - 文件不可读 / 解析失败 / 为空一律抛 {@link ConfigLoadException}（FR-ZERO-03：
+ *   不静默覆盖用户已有的手工配置）；
  * - 内置默认值仅作为字段级缺省（POJO 字段初始值）；
  * - 加载后统一处理路径字段（~ 展开、相对进程启动目录绝对化），并检测未知字段（FR-13-04）。
  */
@@ -24,6 +26,61 @@ public final class ConfigLoader {
 
     /** 默认配置文件路径（相对进程启动目录）。 */
     public static final String DEFAULT_CONFIG_FILE = "config.yaml";
+
+    /**
+     * 首次启动自动生成的默认配置模板（FR-ZERO-01）。
+     * llm.apiKey 留空 → 无可用 LLM → 由 ConfigValidator 触发降级直通，用户首次即可进入 REPL。
+     */
+    private static final String DEFAULT_CONFIG_TEMPLATE = """
+            # ============================================================
+            # smartcli 配置文件（首次启动自动生成）
+            # 说明: 尚未配置大模型，当前以直通模式运行。
+            #       在 REPL 中输入 /setup 可引导配置大模型。
+            # ============================================================
+
+            version: 1                      # 配置版本
+
+            # ===== 启动行为 =====
+            shell:
+              initialMode: smart            # smart（语义）| direct（直通）
+              splash:
+                enabled: true               # 启动界面总开关
+
+            # ===== LLM 后端（语义模式必填）=====
+            llm:
+              provider: deepseek            # deepseek | openai | ollama
+              baseUrl: https://api.deepseek.com/v1
+              model: deepseek-chat
+              temperature: 0.0              # 采样温度 [0, 2]
+              apiKey:                       # 留空 → 语义模式不可用，自动降级为直通模式
+              timeoutSeconds: 60            # LLM 调用超时（秒），≥ 1
+              showProgress: true            # 等待动画开关
+              context:                      # 多轮对话上下文
+                enabled: true
+                maxTurns: 10                # 保留最近轮数，≥ 1
+                maxResultChars: 2000        # 单轮结果摘要上限（字符），≥ 100
+              profile:                      # 环境指纹（环境感知）
+                enabled: true
+                toolWhitelist: []           # 留空使用内置默认探测清单
+                toolProbeTimeoutMs: 200
+
+            # ===== 命令执行 =====
+            execution:
+              defaultTimeoutSeconds: 60     # 命令执行超时（秒），≥ 1
+              workDir: .                    # 默认工作目录（支持 ~ 展开）
+              readOnly: false               # 只读模式
+
+            # ===== 安全 =====
+            safety:
+              strictMode: false             # 所有命令都需二次确认
+              confirmDestructive: true      # 危险命令二次确认
+              blockPrivateAddresses: true   # 拦截内网地址探测
+
+            # ===== 日志 / 审计 =====
+            logging:
+              auditEnabled: true
+              auditPath: ~/.smartcli/audit.log
+            """;
 
     /** 已知字段全路径白名单（未知字段告警用，FR-13-04）。 */
     private static final Set<String> KNOWN_FIELDS = Set.of(
@@ -41,14 +98,29 @@ public final class ConfigLoader {
     private ConfigLoader() {
     }
 
-    /** 加载结果：生效配置 + 配置文件绝对路径 + 未知字段列表（供告警展示）。 */
-    public record LoadResult(AppConfig config, Path configPath, List<String> unknownFields) {
+    /** 加载结果：生效配置 + 配置文件绝对路径 + 未知字段列表 + 是否本次自动生成（供提示展示）。 */
+    public record LoadResult(AppConfig config, Path configPath, List<String> unknownFields,
+                             boolean generated) {
     }
 
+    /** 严格加载：文件缺失即报错（显式 --config 指定错误路径等场景）。 */
     public static LoadResult load(String configPath) {
+        return load(configPath, false);
+    }
+
+    /**
+     * 加载配置。
+     * @param generateIfMissing 文件缺失时是否自动生成默认配置（FR-ZERO-01，首次启动场景）
+     */
+    public static LoadResult load(String configPath, boolean generateIfMissing) {
         Path path = resolveConfigPath(configPath);
+        boolean generated = false;
         if (!Files.exists(path)) {
-            throw new ConfigLoadException(missingMessage(configPath, path));
+            if (!generateIfMissing) {
+                throw new ConfigLoadException(missingMessage(configPath, path));
+            }
+            writeDefaultConfig(path);
+            generated = true;
         }
         if (!Files.isReadable(path)) {
             throw new ConfigLoadException("[配置错误] 配置文件不可读: " + path);
@@ -95,7 +167,21 @@ public final class ConfigLoader {
             throw new ConfigLoadException("[配置错误] 配置文件为空: " + path);
         }
         normalizePaths(config);
-        return new LoadResult(config, path.toAbsolutePath().normalize(), unknownFields);
+        return new LoadResult(config, path.toAbsolutePath().normalize(), unknownFields, generated);
+    }
+
+    /** 生成默认配置文件（FR-ZERO-01）：落盘带注释的模板，llm.apiKey 留空以触发降级直通。 */
+    private static void writeDefaultConfig(Path path) {
+        try {
+            Path parent = path.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            Files.writeString(path, DEFAULT_CONFIG_TEMPLATE);
+        } catch (Exception e) {
+            throw new ConfigLoadException("[配置错误] 自动生成默认配置文件失败: " + path
+                    + "\n  原因: " + e.getMessage());
+        }
     }
 
     /** 定位配置文件：--config 指定 > 当前目录 config.yaml；~ 展开后基于进程启动目录绝对化。 */

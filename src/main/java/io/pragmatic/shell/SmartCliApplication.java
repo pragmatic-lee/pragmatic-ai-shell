@@ -29,10 +29,15 @@ public final class SmartCliApplication implements Callable<Integer> {
     public Integer call() {
         ConfigLoader.LoadResult loaded;
         try {
-            loaded = ConfigLoader.load(configPath);
+            // 未通过 --config 显式指定时，缺失即自动生成默认配置（FR-ZERO-01，首次启动友好）
+            loaded = ConfigLoader.load(configPath, configPath == null);
         } catch (ConfigLoadException e) {
             System.err.println(e.getMessage());
             return 1;
+        }
+        if (loaded.generated()) {
+            System.out.println("已为你生成默认配置文件: " + loaded.configPath());
+            System.out.println("（尚未配置大模型，将以直通模式启动；进入后输入 /setup 可引导配置）");
         }
         ConfigValidator.ValidationResult validation = ConfigValidator.validate(loaded);
         for (String error : validation.errors()) {
@@ -49,7 +54,7 @@ public final class SmartCliApplication implements Callable<Integer> {
                 ? ShellMode.DIRECT
                 : resolveInitialMode(loaded.config());
         try {
-            new SmartCliShell(loaded.config(), initial).start();
+            new SmartCliShell(loaded.config(), initial, loaded.configPath()).start();
         } catch (Exception e) {
             System.err.println("启动失败: " + e.getMessage());
             return 1;
