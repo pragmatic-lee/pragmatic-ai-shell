@@ -190,6 +190,27 @@ sh pragmatic-ai-shell.sh                 # 自动用同目录 config.yaml
 - **JLine / Jackson / logback 反射与资源**：插件会自动收集大部分可达元数据，复杂动态路径若报错，在该目录下补充 `proxy-config.json` / `resource-config.json` 即可。
 - **构建较慢且吃内存**：首次构建约 1–3 分钟，建议 `MAVEN_OPTS="-Xmx4g"`。
 
+### 构建 Linux 版本（交叉构建，macOS 本机即可）
+
+GraalVM `native-image` 不支持跨操作系统编译，macOS 上无法直接产出 Linux 二进制。项目提供基于 Docker 的一键脚本，在 Linux amd64 容器内完成构建（Apple Silicon 上走 QEMU 模拟）：
+
+```bash
+./bin/build-linux-amd64.sh
+```
+
+- **前置**：本机已安装 Docker（需支持 `--platform`，buildx 默认即可）；无需本机安装 GraalVM（容器内自带）。
+- **产物**：`dist/pragmatic-ai-shell-linux-amd64`（ELF x86-64，glibc 动态链接，适配 Ubuntu / Debian / CentOS 等主流发行版；**不适配 Alpine**，musl 场景另行处理）。
+- **耗时**：首次约 15–40 分钟（拉取基础镜像 + QEMU 模拟），改动代码后重建走层缓存会显著加快；建议给 Docker 分配 ≥ 8GB 内存。
+- **验证**：
+  ```bash
+  file dist/pragmatic-ai-shell-linux-amd64   # 应显示 ELF 64-bit LSB executable, x86-64
+  docker run --rm --platform linux/amd64 \
+    -v "$(pwd)/dist":/app \
+    ubuntu:22.04 /app/pragmatic-ai-shell-linux-amd64 --help
+  ```
+
+构建链路由 `Dockerfile.native`（多阶段：GraalVM 21 glibc 镜像构建 → `scratch` 导出二进制）与 `bin/build-linux-amd64.sh` 组成；脚本内所有 `docker build/create` 均显式指定 `--platform linux/amd64`，避免 Apple Silicon 默认产出 arm64 产物。
+
 ## 📖 使用方式
 
 ### 语义模式（默认，提示符 🤖）

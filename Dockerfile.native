@@ -1,0 +1,34 @@
+# ---------- 构建阶段：Linux amd64 + glibc 2.17（CentOS 7 基底，兼容性最大化） ----------
+# 说明：不能用 ghcr.io/graalvm/native-image-community:21（Oracle Linux 9，glibc 2.34），
+#       否则产物要求目标机 glibc >= 2.34，CentOS 7 / Alibaba Cloud Linux 2 会报
+#       "GLIBC_2.34 not found"。改用 manylinux2014（glibc 2.17）+ GraalVM 21 官方 tarball。
+FROM quay.io/pypa/manylinux2014_x86_64 AS build
+
+# native-image 链接所需工具链（devtoolset 的 gcc 已预装并在 PATH 中）
+RUN yum install -y zlib-devel which curl && yum clean all
+
+# 安装 GraalVM Community JDK 21（自带 native-image，无需 gu install）
+RUN curl -fsSL https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-21.0.2/graalvm-community-jdk-21.0.2_linux-x64_bin.tar.gz \
+        -o /tmp/graalvm.tgz \
+    && tar -xzf /tmp/graalvm.tgz -C /opt \
+    && mv /opt/graalvm-community-openjdk-* /opt/graalvm \
+    && rm -f /tmp/graalvm.tgz
+
+ENV JAVA_HOME=/opt/graalvm
+ENV PATH=/opt/graalvm/bin:$PATH
+
+WORKDIR /build
+
+# 先只拷贝依赖描述文件，利用 Docker 层缓存（改代码不重装依赖）
+COPY pom.xml ./
+COPY mvnw ./
+COPY .mvn ./.mvn
+RUN chmod +x mvnw && ./mvnw -B -q dependency:go-offline -DskipTests || true
+
+# 再拷贝源码并构建 native 二进制
+COPY src ./src
+RUN ./mvnw -B package -Pnative -DskipTests
+
+# ---------- 输出阶段：仅保留二进制 ----------
+FROM scratch AS export
+COPY --from=build /build/target/pragmatic-ai-shell /pragmatic-ai-shell
