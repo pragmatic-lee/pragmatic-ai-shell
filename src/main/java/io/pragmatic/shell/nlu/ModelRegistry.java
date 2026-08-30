@@ -119,25 +119,21 @@ public final class ModelRegistry {
     /** 按 provider 选择后端（从 LangChainNluService 抽出，行为不变）。 */
     static ChatLanguageModel buildModel(LlmProfile llm) {
         Duration timeout = Duration.ofSeconds(llm.getTimeoutSeconds());
-        switch (LlmProvider.valueOf(llm.normalizedProvider().toUpperCase())) {
-            case OLLAMA:
-                return OllamaChatModel.builder()
-                        .baseUrl(llm.getBaseUrl())
-                        .modelName(llm.getModel())
-                        .temperature(llm.getTemperature())
-                        .timeout(timeout)
-                        .build();
-            case DEEPSEEK:
-            case OPENAI:
-            default:
-                return OpenAiChatModel.builder()
-                        .baseUrl(llm.getBaseUrl())
-                        .apiKey(llm.getApiKey())
-                        .modelName(llm.getModel())
-                        .temperature(llm.getTemperature())
-                        .timeout(timeout)
-                        .build();
-        }
+        return switch (LlmProvider.valueOf(llm.normalizedProvider().toUpperCase())) {
+            case OLLAMA -> OllamaChatModel.builder()
+                    .baseUrl(llm.getBaseUrl())
+                    .modelName(llm.getModel())
+                    .temperature(llm.getTemperature())
+                    .timeout(timeout)
+                    .build();
+            default -> OpenAiChatModel.builder()
+                    .baseUrl(llm.getBaseUrl())
+                    .apiKey(llm.getApiKey())
+                    .modelName(llm.getModel())
+                    .temperature(llm.getTemperature())
+                    .timeout(timeout)
+                    .build();
+        };
     }
 
     /**

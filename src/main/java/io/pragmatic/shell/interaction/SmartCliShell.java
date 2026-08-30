@@ -558,23 +558,29 @@ public final class SmartCliShell {
     private void builtin(String line, Terminal terminal, ConfirmationPrompt confirm) {
         PrintWriter out = terminal.writer();
         String[] parts = line.trim().split("\\s+");
-        String name = parts[0].substring(1).toLowerCase();
-        switch (name) {
-            case "help" -> out.println("/help 帮助  /exit 退出  /mode smart|direct 切换模式  /config 查看配置"
+        // 单一数据源：命令分发复用 BuiltinCommand 枚举（与补全表同源，根治遗漏）
+        BuiltinCommand cmd = BuiltinCommand.byName(parts[0].substring(1));
+        if (cmd == null) {
+            out.println("未知内置命令: " + parts[0].substring(1) + "，输入 /help 查看帮助");
+            out.flush();
+            return;
+        }
+        switch (cmd) {
+            case HELP -> out.println("/help 帮助  /exit 退出  /mode smart|direct 切换模式  /config 查看配置"
                     + "  /model [switch <id>|check [id]] 多模型管理  /context 查看多轮上下文"
                     + "  /clear 清空上下文  /profile [refresh] 查看/刷新环境指纹"
                     + "  /setup 引导配置大模型");
-            case "exit", "quit" -> {
+            case EXIT, QUIT -> {
                 out.println("再见。");
                 System.exit(0);
             }
-            case "clear" -> {
+            case CLEAR -> {
                 context.clear();
                 out.println("（多轮上下文已清空，后续对话不再引用此前轮次）");
             }
-            case "context" -> printContext(out);
-            case "profile" -> handleProfile(parts, out);
-            case "mode" -> {
+            case CONTEXT -> printContext(out);
+            case PROFILE -> handleProfile(parts, out);
+            case MODE -> {
                 if (parts.length > 1) {
                     if (parts[1].equalsIgnoreCase("smart") && !ConfigValidator.llmConfigured(config)) {
                         out.println("语义模式不可用：LLM 配置不完整（apiKey/baseUrl/model），请检查 config.yaml");
@@ -584,10 +590,9 @@ public final class SmartCliShell {
                 }
                 out.println("当前模式: " + mode);
             }
-            case "config" -> out.println(config.toDisplayString());
-            case "model" -> handleModel(parts, out);
-            case "setup" -> handleSetup(terminal, out);
-            default -> out.println("未知内置命令: " + name + "，输入 /help 查看帮助");
+            case CONFIG -> out.println(config.toDisplayString());
+            case MODEL -> handleModel(parts, out);
+            case SETUP -> handleSetup(terminal, out);
         }
         out.flush();
     }
