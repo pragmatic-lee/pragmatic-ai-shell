@@ -27,6 +27,8 @@ java    12345 user   45u  IPv6 0x1234      0t0  TCP *:http-alt (LISTEN)
 ## 🎯 核心特性
 
 - **🚀 零配置首次启动**：当前目录无配置文件时自动生成带注释的默认配置并以直通模式立即可用；`/setup` 交互向导引导配置大模型（支持多模型、可反复追加），保存仅写回 `llm` 节点
+- **🔀 多模型接入**：`config.yaml` 中用 `llm.profiles` 声明多个模型并指定 `llm.defaultProfile` 缺省激活；`/model` 查看列表、`/model switch <id>` 运行中切换、`/model check [id]` 健康检查；存量单模型配置（`llm` 顶层字段）零迁移兼容，自动合成隐式 Profile `(inline)`
+- **🎨 启动界面（Splash）**：进入 REPL 前渲染品牌横幅、环境概览、模型列表与安全策略线框界面；非 TTY 自动降级为纯文本，可用 `shell.splash.enabled: false` 关闭
 - **🧠 语义模式（Smart）**：自然语言 → LLM 生成 shell 命令 → 确认 → 执行，支持取消（Ctrl+C）、超时/异常自动降级直通
 - **💬 多轮对话上下文**：保留最近 10 轮对话与命令执行结果（含直通 `!` 命令），模型可引用历史输出完成后续操作；`/context` 查看、`/clear` 清空，退出会话即清空
 - **🌐 环境感知（环境指纹）**：启动时采集本机 OS / Shell / 已装工具及版本，注入 LLM 使生成命令只用已安装工具、按版本选语法；`/profile` 查看、`/profile refresh` 重新采集，可一键关闭（`llm.profile.enabled=false`）
@@ -34,7 +36,7 @@ java    12345 user   45u  IPv6 0x1234      0t0  TCP *:http-alt (LISTEN)
 - **🛡️ 三层安全防线**：模型自审（UNSAFE）→ 黑名单/风险分级过滤 → 危险命令二次确认；默认拦截内网地址扫描类请求
 - **📋 全量审计日志**：每条命令的来源（用户/LLM）、原文、执行结果、耗时，JSON 格式落盘
 - **🖥️ 真终端体验**：JLine REPL、Tab 补全（路径 / 内置命令 / 系统命令名 / 子命令 / 选项）、命令历史（↑↓ 翻阅）、等待动画（可关闭）
-- **🔌 交互式命令支持**：`ssh`/`vim`/`top` 等直连终端（inheritIO），可正常分配伪终端交互
+- **🔌 交互式命令支持**：`ssh`/`vim`/`top` 等交互命令与 `scp`/`sftp`/`rsync` 文件传输命令直连终端（inheritIO）：交互命令可正常分配伪终端；传输命令进度条实时渲染、不受默认超时约束、密码认证可交互输入
 - **📂 会话状态命令 REPL 级处理**：`cd`/`pwd`/`pushd`/`popd`/`dirs`/`export`/`unset`/`source` 跨命令持久生效（详见[使用方式](#-使用方式)与[限制与约束](#-限制与约束)）
 - **🔒 只读模式**：`execution.readOnly: true` 配置开启，仅允许只读命令，适合生产环境排障
 - **⚙️ 配置中心化**：启动模式、只读开关等初始化项全部收编入 `config.yaml`，启动参数仅保留 `--config`
@@ -53,7 +55,7 @@ java    12345 user   45u  IPv6 0x1234      0t0  TCP *:http-alt (LISTEN)
 ### 2. 构建
 
 ```bash
-git clone https://github.com/yourname/pragmatic-ai-shell.git
+git clone https://github.com/pragmatic-lee/pragmatic-ai-shell.git
 cd pragmatic-ai-shell
 mvn clean package -DskipTests
 ```
@@ -62,8 +64,10 @@ mvn clean package -DskipTests
 
 ### 3. 配置文件（首次启动自动生成）
 
-- **不指定 `--config` 时**：若当前目录没有 `config.yaml`，程序会**自动生成一份带注释的默认配置**并继续启动，无需手工准备文件。
+- **不指定 `--config` 时**：按「当前目录 `config.yaml`（存在才用）→ `~/.smartcli/config.yaml`」依次查找；
+  两处均无时，程序会在 **`~/.smartcli` 下自动生成带注释的默认配置**并继续启动，无需手工准备文件。
   默认配置未填 `apiKey`，因此会以**直通模式**启动，并提示输入 `/setup` 引导配置大模型。
+  DMG/App 形态不传启动参数，配置自然落在 `~/.smartcli`（与审计日志 `~/.smartcli/audit.log` 同目录）。
 - **显式 `--config <path>` 指定了路径但文件不存在**：仍按原策略报错退出（退出码 1），不会擅自创建。
 - 文件存在但不可读 / 解析失败：报错退出（不静默覆盖你的手工配置）。
 
@@ -73,14 +77,31 @@ mvn clean package -DskipTests
 cp config.example.yaml config.yaml
 ```
 
-编辑 `config.yaml`，至少填写 LLM 密钥（语义模式需要）：
+编辑 `config.yaml`，至少填写 LLM 密钥（语义模式需要）。**单模型写法**（直接写 `llm` 顶层字段）：
 
 ```yaml
 llm:
-  provider: openai                        # OpenAI 兼容协议（含智谱等）
-  baseUrl: https://api.openai.com/v1      # 你的服务地址
-  model: gpt-4o-mini                      # 模型名
-  apiKey: sk-替换成你的密钥
+  provider: deepseek                    # deepseek | openai | ollama
+  baseUrl: https://api.deepseek.com/v1  # 你的服务地址
+  model: deepseek-chat                  # 模型名
+  apiKey: sk-替换成你的密钥              # ollama 本地模型免填
+```
+
+**多模型写法**（声明 `defaultProfile` + `profiles` 列表，启用后顶层单模型字段被忽略）：
+
+```yaml
+llm:
+  defaultProfile: deep
+  profiles:
+    - id: deep
+      provider: deepseek
+      baseUrl: https://api.deepseek.com/v1
+      model: deepseek-chat
+      apiKey: sk-替换成你的密钥
+    - id: local
+      provider: ollama
+      baseUrl: http://localhost:11434
+      model: qwen3:8b
 ```
 
 > 未配置 LLM 参数时，程序会警告并自动以直通模式启动（纯直通使用无需 LLM）。
@@ -100,7 +121,7 @@ llm:
 
 - 按提示选择 provider（`deepseek` / `openai` / `ollama`），`baseUrl` 与 `model` 会给出推荐默认值，回车即可采用；
 - `ollama` 为本地模型，**跳过 apiKey**；其余 provider 的 apiKey **输入不回显**；
-- 保存后仅写回 `config.yaml` 的 **`llm` 节点**，`shell` / `execution` / `safety` / `logging` 等手工配置原样保留，并自动备份为 `config.yaml.bak`；
+- 保存后仅写回 `config.yaml` 的 **`llm` 节点**，且统一以多 Profile 写法（`defaultProfile` + `profiles`）输出，`shell` / `execution` / `safety` / `logging` 等手工配置原样保留，并自动备份为 `config.yaml.bak`；
 - 保存后执行 `/mode smart` 启用语义模式，或重启生效（`/model` 可查看与切换模型）。
 
 ### 4. 启动
@@ -119,7 +140,7 @@ java --enable-final-field-mutation=ALL-UNNAMED \
 
 | 参数 | 说明 |
 | --- | --- |
-| `--config <路径>` | 指定配置文件（不指定时默认当前目录 `config.yaml`，**缺失会自动生成**） |
+| `--config <路径>` | 指定配置文件（未指定时优先当前目录 `config.yaml`，否则取/生成于 `~/.smartcli/config.yaml`） |
 
 > v4 起启动参数仅保留 `--config`：启动模式与只读开关等初始化项全部由 `config.yaml` 配置。
 
@@ -186,7 +207,8 @@ sh pragmatic-ai-shell.sh                 # 自动用同目录 config.yaml
 ### 已知坑（Native 专属）
 
 - **picocli `AutoHelpMixin` 反射缺失**：picocli 4.7.6 未自带 native-image 元数据，`--help` 在 native 下会抛 `InitializationException`。已在 `src/main/resources/META-INF/native-image/reflect-config.json` 中注册 `SmartCliApplication` 与 `picocli.CommandLine$AutoHelpMixin` / `$HelpCommand` 修复。
-- **SnakeYAML 配置反序列化反射缺失**：native 下 `AppConfig` 及 `config.model` 下 8 个配置类需可被反射实例化，否则报 `NoSuchMethodException: <init>()`。已在上述 `reflect-config.json` 中全部注册（构造器 / 字段 / 方法）。
+- **SnakeYAML 配置反序列化反射缺失**：native 下 `AppConfig` 及 `config.model` 下 9 个配置类需可被反射实例化，否则报 `NoSuchMethodException: <init>()`。已在上述 `reflect-config.json` 中全部注册（构造器 / 字段 / 方法）。
+- **Jackson 审计序列化反射缺失**：`AuditEntry`（record）未注册时，native 下审计日志会写成空对象 `{}`；已在 `reflect-config.json` 中注册。
 - **JLine / Jackson / logback 反射与资源**：插件会自动收集大部分可达元数据，复杂动态路径若报错，在该目录下补充 `proxy-config.json` / `resource-config.json` 即可。
 - **构建较慢且吃内存**：首次构建约 1–3 分钟，建议 `MAVEN_OPTS="-Xmx4g"`。
 
@@ -262,6 +284,7 @@ java    12345 user   45u  IPv6 0x1234      0t0  TCP *:http-alt (LISTEN)
 | `/help` | 查看帮助 |
 | `/mode smart\|direct` | 切换模式（`smart` 需 LLM 配置完整，否则拒绝切换） |
 | `/config` | 查看当前配置（apiKey 打码显示） |
+| `/model` | 查看多模型列表（✓ 标记激活项）；`/model switch <id>` 运行中切换、`/model check [id]` 健康检查 |
 | `/context` | 查看当前多轮上下文（脱敏展示；与 ↑↓ 翻阅的命令历史不同，它是发给模型的历史） |
 | `/clear` | 清空多轮上下文，后续对话不再引用此前轮次 |
 | `/profile` | 查看当前环境指纹（OS / Shell / 已装工具列表）；`/profile refresh` 强制重新采集 |
@@ -289,7 +312,7 @@ java    12345 user   45u  IPv6 0x1234      0t0  TCP *:http-alt (LISTEN)
 | 场景 | 示例 | 补全结果 |
 | --- | --- | --- |
 | 内置命令（首词以 `/` 开头） | `/set` | `/setup` 等全名 |
-| 内置命令参数（第 2 词） | `/mode ` | `smart`、`direct` |
+| 内置命令参数（第 2 词） | `/mode `、`/model ` | `smart`、`direct` / `switch`、`check` |
 | 系统命令名（首词普通前缀） | `gi` | 扫描 `PATH` 得 `git`（缓存加速） |
 | 子命令（首词在规格表，第 2 词） | `git ` | `commit`、`push` 等 |
 | 选项（词以 `-` 开头） | `docker run --` | `--rm`、`--tty` 等 |
@@ -313,15 +336,27 @@ LLM 超时或服务不可用时自动降级为直通模式，不会崩溃中断�
 version: 1
 shell:
   initialMode: smart        # 启动模式: smart / direct（v4 起替代 --mode）
+  splash:
+    enabled: true           # 启动界面总开关；非 TTY 自动降级为纯文本
 llm:
-  provider: openai          # openai / deepseek / ollama
-  baseUrl: https://...      # API 地址
-  model: gpt-4o-mini        # 模型名
+  # 支持两种写法（二选一）：
+  # A. 单模型（向后兼容）：直接写以下顶层字段，自动合成 id=(inline) 的隐式 Profile
+  provider: deepseek        # deepseek / openai / ollama
+  baseUrl: https://api.deepseek.com/v1
+  model: deepseek-chat      # 模型名
   apiKey: sk-xxx            # API 密钥（语义模式必填，缺失自动降级直通；ollama 免填）
   temperature: 0.0          # 采样温度 [0, 2]
-  timeoutSeconds: 60        # LLM 调用超时
+  timeoutSeconds: 60        # LLM 调用超时（秒）
   showProgress: true        # 等待动画开关
-  context:                  # 多轮对话上下文（v5 新增）
+  # B. 多模型：声明 defaultProfile + profiles（启用后以上顶层单模型字段被忽略）
+  # defaultProfile: deep    # 缺省激活的 Profile id
+  # profiles:               # 每项含 id/provider/baseUrl/model/temperature/apiKey/timeoutSeconds
+  #   - id: deep
+  #     provider: deepseek
+  #     baseUrl: https://api.deepseek.com/v1
+  #     model: deepseek-chat
+  #     apiKey: sk-xxx
+  context:                  # 多轮对话上下文（全局共享，不下沉到 Profile）
     enabled: true           # 默认开启；false 时每次调用独立（v2 无上下文行为）
     maxTurns: 10            # 保留最近轮数（≥ 1）
     maxResultChars: 2000    # 单轮命令结果摘要上限字符数（≥ 100），超出保留尾部；同时作为命令输出捕获上限
@@ -348,8 +383,10 @@ logging:
 ### 审计日志示例（`~/.smartcli/audit.log`）
 
 ```json
-{"timestamp":"2026-08-23T03:00:00Z","source":"LLM","input":"找出占用8080端口的进程","command":"lsof -i :8080","exitCode":0,"durationMs":120}
+{"ts":"2026-08-30T03:00:00.123456Z","source":"LLM","input":"找出占用8080端口的进程","command":"lsof -i :8080","exitCode":0,"durationMs":120,"model":"deepseek/deepseek-chat"}
 ```
+
+> `model` 为可选字段：仅语义来源（LLM）命令记录当前激活模型（`provider/model`），直通/状态命令不输出；`source` 取值 `LLM` / `USER`。
 
 ## 🏗️ 架构一览
 
@@ -359,13 +396,13 @@ logging:
                 ├─ 会话状态命令分发器（cd/pwd/pushd/popd/dirs/export/unset/source/alias 提示）
                 │      └─ 进程内模拟：更新 currentDir / 目录栈 / 环境覆盖表（注入后续子进程）
                 │
-语义路径：LLM 生成命令 ──▶ 安全过滤链（模型自审→黑名单→风险分级→内网拦截）
+语义路径：ModelRegistry（多 Profile 管理，懒加载）──▶ LLM 生成命令 ──▶ 安全过滤链（模型自审→黑名单→风险分级→内网拦截）
                 │                      │
                 ▼                 需确认？──▶ 二次确认
            命令执行器（ProcessBuilder 独立子进程，交互命令 inheritIO）
                 │
                 ▼
-           审计日志落盘
+           审计日志落盘（单行 JSON，含来源/模型/退出码/耗时）
 ```
 
 ## ⚠️ 限制与约束
@@ -407,7 +444,8 @@ logging:
 
 ### 8. 交互式命令与超时
 
-- `ssh`/`vim`/`top` 等清单内交互命令走 `inheritIO` 直连终端，**不设超时**（由用户自行退出）；
+- `ssh`/`vim`/`top` 等清单内交互命令，以及 `scp`/`sftp`/`rsync` 文件传输命令，走 `inheritIO` 直连终端，**不设超时**（交互会话由用户自行退出；传输挂死时 Ctrl+C 中断）。
+  文件传输命令依赖直连终端渲染实时进度条，且密码认证可交互输入；
 - 清单外命令如果本身需要 TTY 交互，可能行为异常（stdin 非终端）；
 - **读取 stdin 的命令立即结束**：`cat`、`sort`、`grep <pattern>`、`python3`（均不带文件参数）这类等待键盘输入的命令，
   启动时即收到 EOF 并**立即返回**（行为等同于在原生终端按 `Ctrl+D`），不会阻塞到超时；
@@ -433,6 +471,9 @@ A：`alias`/`function` 属于 shell 命名空间状态，无法在 REPL 层完�
 
 **Q：启动时出现 `WARNING: Final field ... has been mutated reflectively`？**
 A：这是 JDK 24+ 对 Gson 反射行为的告警，用 `bin/smartcli` 脚本启动会自动处理。
+
+**Q：配置了多个模型，运行中怎么切换？**
+A：`/model` 查看列表（✓ 为当前激活项），`/model switch <id>` 即可运行中切换（无需重启），`/model check [id]` 可先做健康检查。新模型可随时用 `/setup` 追加（仅写回 `llm` 节点，自动备份原文件）。
 
 **Q：`ssh`/`vim` 这类交互命令能用吗？**
 A：可以。交互类命令（ssh/telnet/vim/top 等）自动走 `inheritIO` 直连终端。

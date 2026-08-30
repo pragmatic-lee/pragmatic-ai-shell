@@ -49,12 +49,25 @@ class ProcessCommandExecutorTest {
     }
 
     @Test
+    void fileTransferCommandsNeedInheritIo() {
+        // 文件传输命令进度显示依赖 TTY 且长时运行，必须走 inheritIO（否则无进度条、60 秒被强杀、密码认证失败）
+        assertTrue(ProcessCommandExecutor.isInteractive("scp big.tar.gz user@host:/tmp/"));
+        assertTrue(ProcessCommandExecutor.isInteractive("sftp user@host"));
+        assertTrue(ProcessCommandExecutor.isInteractive("rsync -avz src/ user@host:/backup/"));
+        assertTrue(ProcessCommandExecutor.isInteractive("rsync --progress a b"));
+        // 绝对路径调用同样命中（baseName 归一化）
+        assertTrue(ProcessCommandExecutor.isInteractive("/usr/bin/scp file user@host:/tmp/"));
+        assertTrue(ProcessCommandExecutor.isInteractive("/usr/bin/sftp user@host"));
+    }
+
+    @Test
     void plainContainerCommandsKeepPipeRelay() {
         // 非交互容器命令（无 -it）：保持管道中继与超时兜底
         assertFalse(ProcessCommandExecutor.isInteractive("docker ps"));
         assertFalse(ProcessCommandExecutor.isInteractive("docker exec abc ls"));
         assertFalse(ProcessCommandExecutor.isInteractive("docker run -d nginx"));
         assertFalse(ProcessCommandExecutor.isInteractive("ls -la"));
+        assertFalse(ProcessCommandExecutor.isInteractive("echo scp file"));
         assertFalse(ProcessCommandExecutor.isInteractive(null));
     }
 

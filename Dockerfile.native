@@ -4,12 +4,16 @@
 #       "GLIBC_2.34 not found"。改用 manylinux2014（glibc 2.17）+ GraalVM 21 官方 tarball。
 FROM quay.io/pypa/manylinux2014_x86_64 AS build
 
+# 切换 yum 源到阿里云 vault 镜像（CentOS 7 已 EOL，官方源迁至 vault.centos.org，国内访问超时/403）
+RUN sed -i 's|https://vault.centos.org|https://mirrors.aliyun.com/centos-vault|g' /etc/yum.repos.d/CentOS-*.repo
+
 # native-image 链接所需工具链（devtoolset 的 gcc 已预装并在 PATH 中）
 RUN yum install -y zlib-devel which curl && yum clean all
 
-# 安装 GraalVM Community JDK 21（自带 native-image，无需 gu install）
-RUN curl -fsSL https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-21.0.2/graalvm-community-jdk-21.0.2_linux-x64_bin.tar.gz \
-        -o /tmp/graalvm.tgz \
+# 安装 GraalVM Community JDK 21（自带 native-image，无需 gu install；依次尝试加速镜像，失败回落 GitHub 直连）
+RUN (curl -fsSL -o /tmp/graalvm.tgz https://gh-proxy.com/https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-21.0.2/graalvm-community-jdk-21.0.2_linux-x64_bin.tar.gz \
+        || curl -fsSL -o /tmp/graalvm.tgz https://ghfast.top/https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-21.0.2/graalvm-community-jdk-21.0.2_linux-x64_bin.tar.gz \
+        || curl -fsSL -o /tmp/graalvm.tgz https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-21.0.2/graalvm-community-jdk-21.0.2_linux-x64_bin.tar.gz) \
     && tar -xzf /tmp/graalvm.tgz -C /opt \
     && mv /opt/graalvm-community-openjdk-* /opt/graalvm \
     && rm -f /tmp/graalvm.tgz
@@ -18,6 +22,18 @@ ENV JAVA_HOME=/opt/graalvm
 ENV PATH=/opt/graalvm/bin:$PATH
 
 WORKDIR /build
+
+# 配置 Maven 使用阿里云镜像（避免 Maven Central 国内访问慢）
+RUN mkdir -p /root/.m2 && printf '%s\n' \
+        '<settings>' \
+        '  <mirrors>' \
+        '    <mirror>' \
+        '      <id>aliyun-public</id>' \
+        '      <mirrorOf>*</mirrorOf>' \
+        '      <url>https://maven.aliyun.com/repository/public</url>' \
+        '    </mirror>' \
+        '  </mirrors>' \
+        '</settings>' > /root/.m2/settings.xml
 
 # 先只拷贝依赖描述文件，利用 Docker 层缓存（改代码不重装依赖）
 COPY pom.xml ./

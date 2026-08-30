@@ -22,7 +22,7 @@ import picocli.CommandLine.Option;
         version = "smartcli 1.0", description = "基于 LLM 的智能命令行工具（单命令模式）")
 public final class SmartCliApplication implements Callable<Integer> {
 
-    @Option(names = "--config", description = "配置文件路径（默认当前目录 config.yaml）")
+    @Option(names = "--config", description = "配置文件路径（未指定时优先当前目录 config.yaml，否则取/生成于 ~/.smartcli/config.yaml）")
     String configPath;
 
     @Override

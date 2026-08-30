@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -181,5 +182,66 @@ class ConfigLoaderTest {
         assertEquals(1, r.config().getLlm().resolvedProfiles().size());
         assertEquals("(inline)", r.config().getLlm().resolvedProfiles().get(0).getId());
         assertTrue(r.config().getLlm().resolvedProfiles().get(0).isUsable());
+    }
+
+    @Test
+    void resolveExplicitPathIgnoresFallback() throws Exception {
+        // --config 显式指定：严格使用该路径，不参与回落（FR-CFG-01）
+        Path base = tempDir.resolve("proj");
+        Files.createDirectories(base);
+        Files.writeString(base.resolve("config.yaml"), "version: 1\n");
+        Path home = tempDir.resolve("home");
+        Path explicit = tempDir.resolve("custom.yaml");
+        assertEquals(explicit.toAbsolutePath().normalize(),
+                ConfigLoader.resolveConfigPath(explicit.toString(), base, home));
+    }
+
+    @Test
+    void resolvePrefersLocalConfigWhenPresent() throws Exception {
+        // 未指定 --config 且当前目录有 config.yaml：优先当前目录（FR-CFG-02，存量兼容）
+        Path base = tempDir.resolve("proj");
+        Files.createDirectories(base);
+        Path local = base.resolve("config.yaml");
+        Files.writeString(local, "version: 1\n");
+        Path home = tempDir.resolve("home");
+        assertEquals(local.toAbsolutePath().normalize(),
+                ConfigLoader.resolveConfigPath(null, base, home));
+    }
+
+    @Test
+    void resolveFallsBackToSmartCliDirWhenNoLocal() {
+        // 未指定 --config 且当前目录无配置：回落到 ~/.smartcli/config.yaml（FR-CFG-03）
+        Path base = tempDir.resolve("empty-proj");
+        Path home = tempDir.resolve("home");
+        assertEquals(home.resolve(".smartcli").resolve("config.yaml").normalize(),
+                ConfigLoader.resolveConfigPath(null, base, home));
+    }
+
+    @Test
+    void fallbackGeneratesDefaultConfigInSmartCliDir() {
+        // 两处均无配置：自动生成于 ~/.smartcli（DMG/App 首启场景，FR-CFG-03/04）
+        Path base = tempDir.resolve("empty-proj");
+        Path home = tempDir.resolve("home");
+        ConfigLoader.LoadResult r = ConfigLoader.load(null, true, base, home);
+        assertTrue(r.generated());
+        Path expected = home.resolve(".smartcli").resolve("config.yaml");
+        assertEquals(expected.toAbsolutePath().normalize(), r.configPath());
+        assertTrue(Files.exists(expected), "默认模板应落盘到回落目录");
+        // 模板 apiKey 留空 → 保持降级直通的前提条件不变（FR-ZERO-01）
+        assertTrue(r.config().getLlm().getApiKey() == null || r.config().getLlm().getApiKey().isBlank());
+    }
+
+    @Test
+    void localConfigLoadedWithoutFallbackGeneration() throws Exception {
+        // 当前目录有配置时直接加载，不应触发回落目录的生成（零回归，FR-CFG-06）
+        Path base = tempDir.resolve("proj");
+        Files.createDirectories(base);
+        Files.writeString(base.resolve("config.yaml"), "version: 1\nllm:\n  provider: ollama\n");
+        Path home = tempDir.resolve("home");
+        ConfigLoader.LoadResult r = ConfigLoader.load(null, true, base, home);
+        assertFalse(r.generated());
+        assertEquals(base.resolve("config.yaml").toAbsolutePath().normalize(), r.configPath());
+        assertEquals("ollama", r.config().getLlm().getProvider());
+        assertFalse(Files.exists(home.resolve(".smartcli")), "当前目录命中时不应创建回落目录");
     }
 }

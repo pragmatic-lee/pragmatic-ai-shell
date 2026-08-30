@@ -15,7 +15,7 @@ import java.util.concurrent.TimeUnit;
  * 基于 ProcessBuilder 的命令执行器。
  * - 跨平台：Unix 用 /bin/sh -c，Windows 用 cmd.exe /c
  * - 实时输出：两个 StreamPump 线程消费 stdout/stderr
- * - 交互命令（ssh/vim 等）：inheritIO 直连终端，子进程可分配 PTY
+ * - 交互命令（ssh/vim 等）与文件传输命令（scp/sftp/rsync）：inheritIO 直连终端，子进程可分配 PTY
  * - 超时：waitFor(timeout)，超时则递归销毁整棵进程树（含后台任务等孙进程）
  * - 输出回流（FR-CTX-02）：实时打印的同时收集尾部摘要，随 ExecutionResult.output 返回，供多轮上下文使用
  */
@@ -28,6 +28,9 @@ public final class ProcessCommandExecutor implements CommandExecutor {
     /** 容器 CLI：exec/attach（或 run -it）进入容器交互会话，同样需要 TTY。 */
     private static final List<String> CONTAINER_CLIS =
             List.of("docker", "podman", "nerdctl", "crictl", "kubectl");
+
+    /** 文件传输命令：进度显示依赖真实终端（TTY），且长时运行不应受默认超时约束。 */
+    private static final List<String> FILE_TRANSFER_COMMANDS = List.of("scp", "sftp", "rsync");
 
     /** 输出捕获上限默认值（FR-CTX-02，与 llm.context.maxResultChars 默认一致）。 */
     public static final int DEFAULT_MAX_OUTPUT_CHARS = 2000;
@@ -156,7 +159,10 @@ public final class ProcessCommandExecutor implements CommandExecutor {
         }
     }
 
-    /** 首个 token 命中交互式命令清单（如 ssh/vim/top），或容器 CLI 的 exec/attach/run -it 时走 inheritIO。 */
+    /**
+     * 首个 token 命中交互式命令清单（如 ssh/vim/top）或文件传输命令清单（scp/sftp/rsync），
+     * 或容器 CLI 的 exec/attach/run -it 时走 inheritIO。
+     */
     static boolean isInteractive(String command) {
         if (command == null) {
             return false;
@@ -166,7 +172,7 @@ public final class ProcessCommandExecutor implements CommandExecutor {
             return false;
         }
         String name = baseName(parts[0]);
-        if (INTERACTIVE_COMMANDS.contains(name)) {
+        if (INTERACTIVE_COMMANDS.contains(name) || FILE_TRANSFER_COMMANDS.contains(name)) {
             return true;
         }
         return CONTAINER_CLIS.contains(name) && isContainerInteractive(parts);

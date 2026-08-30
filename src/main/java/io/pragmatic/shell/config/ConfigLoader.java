@@ -14,7 +14,8 @@ import java.util.Set;
 
 /**
  * 使用 SnakeYAML 加载 config.yaml 为 AppConfig（v4：强制加载，FR-12）。
- * - 未指定 --config 时默认加载进程启动目录下的 config.yaml；
+ * - 未指定 --config 时按三级回落解析（FR-CFG-02/03）：当前目录 config.yaml（存在才用）
+ *   → ~/.smartcli/config.yaml（DMG/App 分发归口，与审计日志同目录）；
  * - 文件缺失时：仅在 {@code generateIfMissing=true}（首次启动场景，FR-ZERO-01）
  *   自动生成默认配置文件并继续；否则仍抛 {@link ConfigLoadException} 报错退出；
  * - 文件不可读 / 解析失败 / 为空一律抛 {@link ConfigLoadException}（FR-ZERO-03：
@@ -113,7 +114,12 @@ public final class ConfigLoader {
      * @param generateIfMissing 文件缺失时是否自动生成默认配置（FR-ZERO-01，首次启动场景）
      */
     public static LoadResult load(String configPath, boolean generateIfMissing) {
-        Path path = resolveConfigPath(configPath);
+        return load(configPath, generateIfMissing, Path.of(""), Path.of(System.getProperty("user.home")));
+    }
+
+    /** 包级可见重载：注入基准目录与主目录，供测试验证回落行为而不触达真实环境；生产路径等价委托。 */
+    static LoadResult load(String configPath, boolean generateIfMissing, Path baseDir, Path homeDir) {
+        Path path = resolveConfigPath(configPath, baseDir, homeDir);
         boolean generated = false;
         if (!Files.exists(path)) {
             if (!generateIfMissing) {
@@ -184,16 +190,30 @@ public final class ConfigLoader {
         }
     }
 
-    /** 定位配置文件：--config 指定 > 当前目录 config.yaml；~ 展开后基于进程启动目录绝对化。 */
-    private static Path resolveConfigPath(String configPath) {
-        String p = configPath != null ? configPath : DEFAULT_CONFIG_FILE;
-        return Path.of(expandHome(p)).toAbsolutePath().normalize();
+    /**
+     * 定位配置文件（三级回落，FR-CFG-01/02/03）：--config 指定 &gt; 基准目录 config.yaml（存在才用，
+     * 兼容存量习惯与项目级配置）&gt; ~/.smartcli/config.yaml（DMG/App 分发归口，与审计日志同目录）。
+     */
+    static Path resolveConfigPath(String configPath) {
+        return resolveConfigPath(configPath, Path.of(""), Path.of(System.getProperty("user.home")));
+    }
+
+    /** 包级可见重载：注入基准目录与主目录，供测试验证三级回落而不触达真实环境。 */
+    static Path resolveConfigPath(String configPath, Path baseDir, Path homeDir) {
+        if (configPath != null) {
+            return Path.of(expandHome(configPath)).toAbsolutePath().normalize();
+        }
+        Path local = baseDir.resolve(DEFAULT_CONFIG_FILE).toAbsolutePath().normalize();
+        if (Files.exists(local)) {
+            return local;
+        }
+        return homeDir.resolve(".smartcli").resolve(DEFAULT_CONFIG_FILE).normalize();
     }
 
     private static String missingMessage(String configPath, Path path) {
         StringBuilder sb = new StringBuilder("[配置错误] 未找到配置文件: ").append(path);
         if (configPath == null) {
-            sb.append("\n  当前目录下不存在 config.yaml，且未通过 --config 指定配置文件。")
+            sb.append("\n  当前目录与 ~/.smartcli 目录下均不存在 config.yaml，且未通过 --config 指定配置文件。")
                     .append("\n  修复方式:")
                     .append("\n    1) 基于模板创建: cp config.example.yaml ./config.yaml")
                     .append("\n    2) 或指定其他路径: smartcli --config /path/to/config.yaml");

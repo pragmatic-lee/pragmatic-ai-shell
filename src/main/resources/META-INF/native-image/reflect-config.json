@@ -25,6 +25,15 @@
     "allPublicMethods": true
   },
   {
+    "name": "io.pragmatic.shell.audit.AuditEntry",
+    "allDeclaredConstructors": true,
+    "allPublicConstructors": true,
+    "allDeclaredMethods": true,
+    "allPublicMethods": true,
+    "allDeclaredFields": true,
+    "allPublicFields": true
+  },
+  {
     "name": "io.pragmatic.shell.config.AppConfig",
     "allDeclaredConstructors": true,
     "allPublicConstructors": true,
