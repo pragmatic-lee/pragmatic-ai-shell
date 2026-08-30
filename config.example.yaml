@@ -51,7 +51,7 @@ llm:
 
 # ===== 命令执行 =====
 execution:
-  defaultTimeoutSeconds: 60     # 命令执行超时（秒），≥ 1
+  defaultTimeoutSeconds: 0      # 命令执行超时（秒）：0 = 不限时（挂死命令按 Ctrl+C 中断），> 0 = 超时强杀
   workDir: .                    # 默认工作目录（支持 ~ 展开，相对进程启动目录）
   readOnly: false               # 只读模式: true 时仅允许执行只读命令
 

@@ -58,6 +58,12 @@ public final class SmartCliShell {
     private final AuditLogger audit;
     private final ConfirmationPrompt confirm;
     private ShellMode mode = ShellMode.SMART;
+    /** 是否正在执行命令（区分 Ctrl+C 信号处理路径，FR-UTO-02）。 */
+    private volatile boolean executing;
+    /** 最近一次命令是否被用户 Ctrl+C 中断（供输出提示，FR-UTO-02）。 */
+    private volatile boolean interruptedByUser;
+    /** 进行中的语义调用（可被 Ctrl+C 取消，FR-WAIT）。 */
+    private volatile CancelableNluCall currentNluCall;
     private java.nio.file.Path currentDir;
     /** 目录栈（pushd/popd，策略一 M2）。 */
     private final Deque<Path> dirStack = new ArrayDeque<>();
@@ -153,6 +159,20 @@ public final class SmartCliShell {
 
     public void start() throws Exception {
         Terminal terminal = TerminalBuilder.builder().system(true).build();
+        // 注册 Ctrl+C 处理（FR-UTO-02/03）：命令执行中强杀当前命令进程树；语义调用中取消该调用；
+        // 空闲态由 readLine 自身抛 UserInterruptException，主循环捕获后仅清空输入行。
+        // 注：readLine 期间 JLine 会临时接管 INT 处理器，本处理器仅在非读取时段生效。
+        terminal.handle(Terminal.Signal.INT, signal -> {
+            if (executing) {
+                interruptedByUser = true;
+                executor.interruptCurrent();
+                return;
+            }
+            CancelableNluCall nluCall = currentNluCall;
+            if (nluCall != null) {
+                nluCall.cancel();
+            }
+        });
         PrintWriter out = terminal.writer();
         History history = new DefaultHistory();
         this.currentDir = java.nio.file.Path.of(config.getExecution().getWorkDir())
@@ -183,6 +203,10 @@ public final class SmartCliShell {
                 line = reader.readLine(prompt);
             } catch (org.jline.reader.EndOfFileException eof) {
                 break; // Ctrl+D / 输入流结束
+            } catch (org.jline.reader.UserInterruptException uie) {
+                out.println("^C"); // Ctrl+C：清空当前输入行，会话继续（FR-UTO-03）
+                out.flush();
+                continue;
             }
             if (line == null) {
                 break; // Ctrl+D
@@ -190,7 +214,12 @@ public final class SmartCliShell {
             if (line.isBlank()) {
                 continue;
             }
-            handle(line, terminal, confirm, completer);
+            try {
+                handle(line, terminal, confirm, completer);
+            } catch (org.jline.reader.UserInterruptException uie) {
+                out.println("（已中断）"); // 确认提示等环节按 Ctrl+C：取消本次操作，会话继续
+                out.flush();
+            }
         }
         terminal.close();
     }
@@ -221,6 +250,7 @@ public final class SmartCliShell {
         try {
             pi.start();
             call = new CancelableNluCall(nlu(), line, context.snapshot(), profile, llmTimeout);
+            currentNluCall = call;               // 等待期间可被 Ctrl+C 取消（FR-WAIT）
             NluResult result = call.await();   // 内部处理超时/取消（Ctrl+C 中断）
             pi.stop();
             switch (result.status()) {
@@ -255,6 +285,7 @@ public final class SmartCliShell {
             out.println("语义服务不可用，已切换为直通模式。原因: " + e.getMessage());
             downgradeToDirect(out, "异常: " + e.getMessage());
         } finally {
+            currentNluCall = null;
             if (call != null) {
                 call.shutdown();
             }
@@ -539,14 +570,23 @@ public final class SmartCliShell {
     private ExecutionResult runAndAudit(String command, String source, String input, Terminal terminal) {
         PrintWriter out = terminal.writer();
         long start = System.currentTimeMillis();
-        var result = executor.execute(new ExecutionRequest(
-                command, currentDir,
-                Duration.ofSeconds(config.getExecution().getDefaultTimeoutSeconds()),
-                envOverrides.isEmpty() ? null : Map.copyOf(envOverrides)));
+        interruptedByUser = false;
+        executing = true;
+        ExecutionResult result;
+        try {
+            result = executor.execute(new ExecutionRequest(
+                    command, currentDir,
+                    Duration.ofSeconds(config.getExecution().getDefaultTimeoutSeconds()),
+                    envOverrides.isEmpty() ? null : Map.copyOf(envOverrides)));
+        } finally {
+            executing = false;
+        }
         long duration = System.currentTimeMillis() - start;
         if (result.timedOut()) {
             out.println("⏱ 命令执行超时（" + config.getExecution().getDefaultTimeoutSeconds()
                     + "s），已强制终止。");
+        } else if (interruptedByUser) {
+            out.println("（命令已被用户中断，退出码 " + result.exitCode() + "）");
         } else {
             out.println("（退出码 " + result.exitCode() + "）");
         }

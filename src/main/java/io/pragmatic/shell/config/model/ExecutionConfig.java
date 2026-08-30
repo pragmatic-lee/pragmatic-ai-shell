@@ -4,7 +4,8 @@ package io.pragmatic.shell.config.model;
  * 执行引擎配置（普通 POJO，便于 SnakeYAML 反序列化）。
  */
 public class ExecutionConfig {
-    private int defaultTimeoutSeconds = 60;
+    /** 命令执行超时（秒）：0 = 不限时（FR-UTO-01，挂死命令由 Ctrl+C 中断兜底），> 0 = 超时强杀。 */
+    private int defaultTimeoutSeconds = 0;
     private String workDir = ".";
     private boolean readOnly = false;
 

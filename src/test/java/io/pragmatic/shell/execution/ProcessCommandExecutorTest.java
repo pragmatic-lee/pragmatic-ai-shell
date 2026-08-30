@@ -5,9 +5,14 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -58,6 +63,17 @@ class ProcessCommandExecutorTest {
         // 绝对路径调用同样命中（baseName 归一化）
         assertTrue(ProcessCommandExecutor.isInteractive("/usr/bin/scp file user@host:/tmp/"));
         assertTrue(ProcessCommandExecutor.isInteractive("/usr/bin/sftp user@host"));
+    }
+
+    @Test
+    void downloadCommandsNeedInheritIo() {
+        // 下载命令长时运行，必须走 inheritIO（否则超 60 秒被强杀，下载拦腰斩断）
+        assertTrue(ProcessCommandExecutor.isInteractive("curl -O https://example.com/big.tar.gz"));
+        assertTrue(ProcessCommandExecutor.isInteractive("curl -fsSL -o /tmp/a.tgz https://example.com/a.tgz"));
+        assertTrue(ProcessCommandExecutor.isInteractive("wget https://example.com/big.iso"));
+        // 绝对路径调用同样命中（baseName 归一化）
+        assertTrue(ProcessCommandExecutor.isInteractive("/usr/bin/curl https://example.com/a.zip"));
+        assertTrue(ProcessCommandExecutor.isInteractive("/usr/bin/wget -c https://example.com/b.zip"));
     }
 
     @Test
@@ -161,5 +177,40 @@ class ProcessCommandExecutorTest {
                     && info.arguments().map(args -> java.util.List.of(args).contains("4321")).orElse(false);
         });
         assertFalse(orphanAlive, "后台任务应随超时销毁一并清理，不能残留为孤儿进程");
+    }
+
+    @Test
+    void zeroTimeoutMeansUnlimitedWait() {
+        // FR-UTO-01：超时 0 = 不限时，应正常等待命令完成，而非触发超时强杀
+        StringBuilder out = new StringBuilder();
+        ProcessCommandExecutor executor = new ProcessCommandExecutor(out);
+        ExecutionResult result = executor.execute(new ExecutionRequest(
+                "sleep 1 && echo unlimited-ok", Path.of("/tmp"), Duration.ZERO, null));
+        assertFalse(result.timedOut(), "超时 0 表示不限时，不应触发超时强杀");
+        assertEquals(0, result.exitCode());
+        assertTrue(out.toString().contains("unlimited-ok"), "命令应完整执行完毕, 实际输出: " + out);
+    }
+
+    @Test
+    void interruptCurrentDestroysProcessTree() throws Exception {
+        // FR-UTO-02：模拟 Ctrl+C 中断——不限时命令被 interruptCurrent 强杀，且无孤儿进程残留
+        StringBuilder out = new StringBuilder();
+        ProcessCommandExecutor executor = new ProcessCommandExecutor(out);
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<ExecutionResult> f = pool.submit(() -> executor.execute(new ExecutionRequest(
+                    "sleep 4567", Path.of("/tmp"), Duration.ZERO, null)));
+            Thread.sleep(500);           // 等子进程启动（独特参数 4567 避免与系统中其他 sleep 误判）
+            executor.interruptCurrent(); // Ctrl+C 入口：强杀进程树
+            ExecutionResult result = f.get(5, TimeUnit.SECONDS);
+            assertFalse(result.timedOut(), "用户中断不是超时，timedOut 应为 false");
+            assertNotEquals(0, result.exitCode(), "被强杀的命令退出码应非 0");
+            Thread.sleep(500);           // 等进程清理完成
+            boolean orphanAlive = ProcessHandle.allProcesses().anyMatch(p ->
+                    p.info().arguments().map(args -> java.util.List.of(args).contains("4567")).orElse(false));
+            assertFalse(orphanAlive, "中断后不应残留孤儿进程");
+        } finally {
+            pool.shutdownNow();
+        }
     }
 }

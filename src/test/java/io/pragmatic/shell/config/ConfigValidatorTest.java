@@ -59,6 +59,14 @@ class ConfigValidatorTest {
     }
 
     @Test
+    void executionTimeoutZeroMeansUnlimited() {
+        // FR-UTO-01/04：execution 超时 0 = 不限时，合法；仅负数致命（见上例）
+        AppConfig c = validConfig();
+        c.getExecution().setDefaultTimeoutSeconds(0);
+        assertTrue(ConfigValidator.validate(load(c)).errors().isEmpty());
+    }
+
+    @Test
     void missingApiKeyDegradesToDirect() {
         AppConfig c = validConfig();
         c.getLlm().setApiKey(null);

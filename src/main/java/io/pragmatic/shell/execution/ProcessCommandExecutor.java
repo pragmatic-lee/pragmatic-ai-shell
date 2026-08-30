@@ -15,8 +15,8 @@ import java.util.concurrent.TimeUnit;
  * 基于 ProcessBuilder 的命令执行器。
  * - 跨平台：Unix 用 /bin/sh -c，Windows 用 cmd.exe /c
  * - 实时输出：两个 StreamPump 线程消费 stdout/stderr
- * - 交互命令（ssh/vim 等）与文件传输命令（scp/sftp/rsync）：inheritIO 直连终端，子进程可分配 PTY
- * - 超时：waitFor(timeout)，超时则递归销毁整棵进程树（含后台任务等孙进程）
+ * - 交互命令（ssh/vim 等）、文件传输命令（scp/sftp/rsync）与下载命令（curl/wget）：inheritIO 直连终端，子进程可分配 PTY
+ * - 超时：≤ 0 不限时（无限等待，由 Ctrl+C 中断兜底，FR-UTO-01）；显式 > 0 时 waitFor(timeout)，超时则递归销毁整棵进程树（含后台任务等孙进程）
  * - 输出回流（FR-CTX-02）：实时打印的同时收集尾部摘要，随 ExecutionResult.output 返回，供多轮上下文使用
  */
 public final class ProcessCommandExecutor implements CommandExecutor {
@@ -32,11 +32,16 @@ public final class ProcessCommandExecutor implements CommandExecutor {
     /** 文件传输命令：进度显示依赖真实终端（TTY），且长时运行不应受默认超时约束。 */
     private static final List<String> FILE_TRANSFER_COMMANDS = List.of("scp", "sftp", "rsync");
 
+    /** 下载命令：大文件下载长时运行，不应受默认超时约束（否则传输中途被强杀）。 */
+    private static final List<String> DOWNLOAD_COMMANDS = List.of("curl", "wget");
+
     /** 输出捕获上限默认值（FR-CTX-02，与 llm.context.maxResultChars 默认一致）。 */
     public static final int DEFAULT_MAX_OUTPUT_CHARS = 2000;
 
     private final Appendable console;
     private final int maxOutputChars;
+    /** 当前正在执行的进程（管道/直连两分支共用），供 Ctrl+C 中断（FR-UTO-02）；空闲为 null。 */
+    private volatile Process currentProcess;
 
     /** 输出捕获上限取默认值 2000 字符。 */
     public ProcessCommandExecutor(Appendable console) {
@@ -72,6 +77,7 @@ public final class ProcessCommandExecutor implements CommandExecutor {
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
             Process process = pb.start();
+            currentProcess = process; // 记录当前进程，供 Ctrl+C 中断（FR-UTO-02）
             // 非交互命令不提供输入：立即关闭子进程 stdin，使其读到 EOF 而非无限阻塞（P0-1）。
             // 管道仅当写入端全部关闭时才产生 EOF；父进程若一直持有写入端，cat/sort/grep 等
             // 读取 stdin 的命令会阻塞至超时才被强杀。关闭后行为等同于在原生终端按下 Ctrl+D。
@@ -85,7 +91,15 @@ public final class ProcessCommandExecutor implements CommandExecutor {
             Future<?> outF = pool.submit(outPump);
             Future<?> errF = pool.submit(errPump);
 
-            boolean finished = process.waitFor(req.timeout().toMillis(), TimeUnit.MILLISECONDS);
+            // 超时 ≤ 0 = 不限时：无限等待，挂死命令由 Ctrl+C 中断兜底（FR-UTO-01）
+            long timeoutMs = req.timeout().toMillis();
+            boolean finished;
+            if (timeoutMs > 0) {
+                finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS);
+            } else {
+                process.waitFor();
+                finished = true;
+            }
             if (!finished) {
                 destroyProcessTree(process);
                 pool.shutdownNow();
@@ -104,6 +118,8 @@ public final class ProcessCommandExecutor implements CommandExecutor {
             pool.shutdownNow();
             long duration = System.currentTimeMillis() - start;
             return new ExecutionResult(-1, "执行异常: " + e.getMessage(), duration, false);
+        } finally {
+            currentProcess = null;
         }
     }
 
@@ -141,11 +157,23 @@ public final class ProcessCommandExecutor implements CommandExecutor {
         }
     }
 
+    /**
+     * 中断当前正在执行的命令（Ctrl+C 入口，FR-UTO-02）：
+     * 强杀运行中进程的整棵进程树，与超时清理同一实现；无命令在执行时无操作。
+     */
+    public void interruptCurrent() {
+        Process p = currentProcess;
+        if (p != null && p.isAlive()) {
+            destroyProcessTree(p);
+        }
+    }
+
     /** inheritIO 方式执行：输出直达终端，不设超时（交互会话由用户自行退出）。 */
     private ExecutionResult executeInherited(ProcessBuilder pb, long start) {
         try {
             pb.inheritIO();
             Process process = pb.start();
+            currentProcess = process; // 记录当前进程，供 Ctrl+C 中断（FR-UTO-02）
             int exit = process.waitFor();
             long duration = System.currentTimeMillis() - start;
             return new ExecutionResult(exit, "", duration, false);
@@ -156,12 +184,14 @@ public final class ProcessCommandExecutor implements CommandExecutor {
             Thread.currentThread().interrupt();
             long duration = System.currentTimeMillis() - start;
             return new ExecutionResult(-1, "执行被中断: " + e.getMessage(), duration, false);
+        } finally {
+            currentProcess = null;
         }
     }
 
     /**
-     * 首个 token 命中交互式命令清单（如 ssh/vim/top）或文件传输命令清单（scp/sftp/rsync），
-     * 或容器 CLI 的 exec/attach/run -it 时走 inheritIO。
+     * 首个 token 命中交互式命令清单（如 ssh/vim/top）、文件传输命令清单（scp/sftp/rsync）、
+     * 下载命令清单（curl/wget），或容器 CLI 的 exec/attach/run -it 时走 inheritIO。
      */
     static boolean isInteractive(String command) {
         if (command == null) {
@@ -172,7 +202,8 @@ public final class ProcessCommandExecutor implements CommandExecutor {
             return false;
         }
         String name = baseName(parts[0]);
-        if (INTERACTIVE_COMMANDS.contains(name) || FILE_TRANSFER_COMMANDS.contains(name)) {
+        if (INTERACTIVE_COMMANDS.contains(name) || FILE_TRANSFER_COMMANDS.contains(name)
+                || DOWNLOAD_COMMANDS.contains(name)) {
             return true;
         }
         return CONTAINER_CLIS.contains(name) && isContainerInteractive(parts);

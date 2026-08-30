@@ -59,8 +59,8 @@ public final class ConfigValidator {
             errors.add("[配置错误] " + file + " → llm.timeoutSeconds: 必须 ≥ 1，当前 "
                     + llm.getTimeoutSeconds());
         }
-        if (config.getExecution().getDefaultTimeoutSeconds() < 1) {
-            errors.add("[配置错误] " + file + " → execution.defaultTimeoutSeconds: 必须 ≥ 1，当前 "
+        if (config.getExecution().getDefaultTimeoutSeconds() < 0) {
+            errors.add("[配置错误] " + file + " → execution.defaultTimeoutSeconds: 必须 ≥ 0（0 = 不限时），当前 "
                     + config.getExecution().getDefaultTimeoutSeconds());
         }
 
