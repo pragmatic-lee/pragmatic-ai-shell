@@ -9,7 +9,7 @@ version: 1                      # 配置版本，与程序支持版本比对（F
 
 # ===== 启动行为 =====
 shell:
-  initialMode: smart            # 启动模式: smart（语义）| direct（直通），缺省 smart
+  initialMode: direct           # 启动模式: direct（直通，默认）| smart（语义，需 LLM 配置）
   splash:
     enabled: true               # 启动界面总开关（FR-SPLASH）；非 TTY 自动降级为纯文本
 

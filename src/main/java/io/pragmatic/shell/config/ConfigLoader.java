@@ -43,7 +43,7 @@ public final class ConfigLoader {
 
             # ===== 启动行为 =====
             shell:
-              initialMode: smart            # smart（语义）| direct（直通）
+              initialMode: direct           # direct（直通，默认）| smart（语义，需 LLM 配置）
               splash:
                 enabled: true               # 启动界面总开关
 

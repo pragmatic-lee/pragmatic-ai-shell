@@ -58,7 +58,7 @@ public final class SmartCliShell {
     private final SafetyFilterChain safety;
     private final AuditLogger audit;
     private final ConfirmationPrompt confirm;
-    private ShellMode mode = ShellMode.SMART;
+    private ShellMode mode = ShellMode.DIRECT;
     /** 是否正在执行命令（区分 Ctrl+C 信号处理路径，FR-UTO-02）。 */
     private volatile boolean executing;
     /** 最近一次命令是否被用户 Ctrl+C 中断（供输出提示，FR-UTO-02）。 */
@@ -92,10 +92,11 @@ public final class SmartCliShell {
         return max > 0 ? max : 0;
     }
 
-    /** 从 shell.initialMode 解析初始模式（缺省/非法值回退语义模式，v4 FR-14）。 */
+    /** 从 shell.initialMode 解析初始模式：显式 smart 才进语义，缺省/非法值回退直通（FR-14 调整）。
+     *  默认直通：零配置首次启动即直通，用户按需 /mode smart 切换。 */
     private static ShellMode resolveInitialMode(AppConfig config) {
         String mode = config.getShell() != null ? config.getShell().getInitialMode() : null;
-        return "direct".equalsIgnoreCase(mode) ? ShellMode.DIRECT : ShellMode.SMART;
+        return "smart".equalsIgnoreCase(mode) ? ShellMode.SMART : ShellMode.DIRECT;
     }
 
     /** 兼容构造：未知配置文件路径（/setup 保存功能不可用）。 */

@@ -335,7 +335,7 @@ LLM 超时或服务不可用时自动降级为直通模式，不会崩溃中断�
 ```yaml
 version: 1
 shell:
-  initialMode: smart        # 启动模式: smart / direct（v4 起替代 --mode）
+  initialMode: direct       # 启动模式: direct（默认，无需 LLM）| smart（语义，需 LLM 配置）
   splash:
     enabled: true           # 启动界面总开关；非 TTY 自动降级为纯文本
 llm:
@@ -497,7 +497,7 @@ safety:
 ## 🙋 常见问题
 
 **Q：没有 API Key 能用吗？**
-A：可以。未配置 LLM 参数时启动会警告并自动降级为直通模式；也可以直接配置 `shell.initialMode: direct` 启动，或用 `!` 前缀逐条走直通，完全不调用 LLM。
+A：可以。**默认即以直通模式启动**（`shell.initialMode: direct`，无需 LLM），或用 `!` 前缀逐条走直通，完全不调用 LLM。配置 LLM 后可用 `/mode smart` 切换到语义模式。
 
 **Q：`export FOO=bar` 之后为什么后续命令能看到？**
 A：`export`/`unset` 由 REPL 层维护一张会话环境表，每次执行命令时注入子进程，因此跨命令持久。这是 smartcli 对"子进程不共享 shell 状态"这一限制的补偿实现。

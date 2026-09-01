@@ -5,7 +5,8 @@ package io.pragmatic.shell.config.model;
  * 使用普通 POJO 以便 SnakeYAML 反序列化。
  */
 public class ShellConfig {
-    private String initialMode = "smart";
+    /** 默认直通模式：零配置首次启动即直通，用户按需用 /mode smart 切换（FR-14 调整）。 */
+    private String initialMode = "direct";
     /** 启动界面配置（FR-SPLASH）：默认开启线框 Splash。 */
     private SplashConfig splash = new SplashConfig();
 

@@ -62,10 +62,11 @@ public final class SmartCliApplication implements Callable<Integer> {
         return 0;
     }
 
-    /** 从 shell.initialMode 解析初始模式（缺省/非法值回退语义模式，FR-14）。 */
+    /** 从 shell.initialMode 解析初始模式：显式 smart 才进语义，缺省/非法值回退直通（FR-14 调整）。
+     *  默认直通：零配置首次启动即直通，用户按需 /mode smart 切换。 */
     private static ShellMode resolveInitialMode(AppConfig config) {
         String mode = config.getShell() != null ? config.getShell().getInitialMode() : null;
-        return "direct".equalsIgnoreCase(mode) ? ShellMode.DIRECT : ShellMode.SMART;
+        return "smart".equalsIgnoreCase(mode) ? ShellMode.SMART : ShellMode.DIRECT;
     }
 
     public static void main(String[] args) {
