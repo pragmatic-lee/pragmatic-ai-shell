@@ -14,7 +14,8 @@ public final class SafetyFilterChain {
 
     public SafetyFilterChain(AppConfig config) {
         this.filters = List.of(
-                new BlacklistFilter(),
+                // sudo 策略（运维场景需提权），未配置时回退 reject（现状）
+                new BlacklistFilter(config.getSafety().getSudoPolicy()),
                 new AddressFilter(config.getSafety().isBlockPrivateAddresses()),
                 new ConfirmationGate(config.getSafety().isConfirmDestructive(), config.getExecution().isReadOnly())
         );

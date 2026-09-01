@@ -3,6 +3,7 @@ package io.pragmatic.shell.config;
 import io.pragmatic.shell.config.model.ExecutionConfig;
 import io.pragmatic.shell.config.model.LlmConfig;
 import io.pragmatic.shell.config.model.LoggingConfig;
+import io.pragmatic.shell.config.model.NluConfig;
 import io.pragmatic.shell.config.model.SafetyConfig;
 import io.pragmatic.shell.config.model.ShellConfig;
 
@@ -15,6 +16,7 @@ public class AppConfig {
     private LlmConfig llm = new LlmConfig();
     private ExecutionConfig execution = new ExecutionConfig();
     private SafetyConfig safety = new SafetyConfig();
+    private NluConfig nlu = new NluConfig();
     private LoggingConfig logging = new LoggingConfig();
 
     public AppConfig() {
@@ -60,6 +62,14 @@ public class AppConfig {
         this.safety = safety;
     }
 
+    public NluConfig getNlu() {
+        return nlu;
+    }
+
+    public void setNlu(NluConfig nlu) {
+        this.nlu = nlu;
+    }
+
     public LoggingConfig getLogging() {
         return logging;
     }
@@ -78,6 +88,7 @@ public class AppConfig {
         copy.execution.setWorkDir(this.execution.getWorkDir());
         copy.execution.setReadOnly(readOnly);
         copy.safety = this.safety;
+        copy.nlu = this.nlu;
         copy.logging = this.logging;
         return copy;
     }
@@ -94,6 +105,7 @@ public class AppConfig {
                 ", llm=" + llm.maskedString() +
                 ", execution=" + execution +
                 ", safety=" + safety +
+                ", nlu=" + nlu +
                 ", logging=" + logging +
                 '}';
     }
@@ -105,6 +117,7 @@ public class AppConfig {
                 ", llm=" + llm +
                 ", execution=" + execution +
                 ", safety=" + safety +
+                ", nlu=" + nlu +
                 ", logging=" + logging +
                 '}';
     }

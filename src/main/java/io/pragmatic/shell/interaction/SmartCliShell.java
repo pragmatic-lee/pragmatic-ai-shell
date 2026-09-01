@@ -10,6 +10,7 @@ import io.pragmatic.shell.execution.ExecutionResult;
 import io.pragmatic.shell.execution.ProcessCommandExecutor;
 import io.pragmatic.shell.nlu.ContextTurn;
 import io.pragmatic.shell.nlu.EnvironmentProfile;
+import io.pragmatic.shell.nlu.ExecutionJudgment;
 import io.pragmatic.shell.nlu.EnvironmentProbe;
 import io.pragmatic.shell.nlu.LangChainNluService;
 import io.pragmatic.shell.nlu.ModelRegistry;
@@ -138,7 +139,9 @@ public final class SmartCliShell {
             synchronized (this) {
                 s = nlu;
                 if (s == null) {
-                    nlu = s = new LangChainNluService(registry, profile);
+                    // FR-NJD-01/03：把 LLM 职责边界配置传入（默认等同现状）
+                    nlu = s = new LangChainNluService(registry, profile,
+                            ExecutionJudgment.from(config.getNlu()));
                 }
             }
         }
@@ -259,8 +262,14 @@ public final class SmartCliShell {
                     out.println("该操作被判定为不安全，已拒绝执行。");
                 }
                 case IMPOSSIBLE -> {
-                    context.add(ContextTurn.modelRefused(line, "（模型判定不可行）"));
-                    out.println("无法执行该请求（模型判定不可行）。");
+                    // FR-NJD-02：纯翻译模式下该状态仅表示"无法转换为命令"，文案需区分
+                    boolean translateOnly = config.getNlu() != null
+                            && !config.getNlu().isExecutionJudgment();
+                    String reason = translateOnly ? "（无法转换为 shell 命令）" : "（模型判定不可行）";
+                    context.add(ContextTurn.modelRefused(line, reason));
+                    out.println(translateOnly
+                            ? "无法将该请求转换为 shell 命令（可能不是操作类意图，或缺少必要信息）。"
+                            : "无法执行该请求（模型判定不可行）。");
                 }
                 case COMMAND -> {
                     // 语义模式下 LLM 生成的状态命令同样在 REPL 层拦截（与直通模式一致）

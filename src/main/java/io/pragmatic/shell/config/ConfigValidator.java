@@ -19,6 +19,8 @@ import java.util.Set;
 public final class ConfigValidator {
 
     private static final Set<String> PROVIDERS = Set.of("deepseek", "openai", "ollama");
+    private static final Set<String> TOOL_CONSTRAINTS = Set.of("strict", "reference");
+    private static final Set<String> SUDO_POLICIES = Set.of("reject", "confirm", "allow");
     private static final int SUPPORTED_VERSION = 1;
 
     private ConfigValidator() {
@@ -62,6 +64,21 @@ public final class ConfigValidator {
         if (config.getExecution().getDefaultTimeoutSeconds() < 0) {
             errors.add("[配置错误] " + file + " → execution.defaultTimeoutSeconds: 必须 ≥ 0（0 = 不限时），当前 "
                     + config.getExecution().getDefaultTimeoutSeconds());
+        }
+
+        // LLM 职责边界与 sudo 策略校验（FR-NJD-01/03/Q3）：枚举非法值致命
+        var nlu = config.getNlu();
+        if (nlu != null) {
+            String tc = nlu.getToolConstraint() == null ? "" : nlu.getToolConstraint().trim().toLowerCase(Locale.ROOT);
+            if (!TOOL_CONSTRAINTS.contains(tc)) {
+                errors.add("[配置错误] " + file + " → nlu.toolConstraint: 不支持的值 \"" + nlu.getToolConstraint()
+                        + "\"，可选: strict / reference");
+            }
+        }
+        String sudoPolicy = config.getSafety().getSudoPolicy();
+        if (sudoPolicy == null || !SUDO_POLICIES.contains(sudoPolicy.trim().toLowerCase(Locale.ROOT))) {
+            errors.add("[配置错误] " + file + " → safety.sudoPolicy: 不支持的值 \"" + sudoPolicy
+                    + "\"，可选: reject / confirm / allow");
         }
 
         // 多轮上下文配置校验（FR-CTX-07-02）：maxTurns / maxResultChars 非法值致命

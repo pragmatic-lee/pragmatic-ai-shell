@@ -76,6 +76,14 @@ public final class ConfigLoader {
               strictMode: false             # 所有命令都需二次确认
               confirmDestructive: true      # 危险命令二次确认
               blockPrivateAddresses: true   # 拦截内网地址探测
+              sudoPolicy: confirm           # confirm=提权强确认后放行（默认）| reject=拒绝 sudo | allow=放行
+
+            # ===== 语义理解（LLM 职责边界）=====
+            nlu:
+              executionJudgment: false      # false=模型只翻译，不判定能否执行，命令交由人确认（默认）
+                                            # true=模型可因风险/可行性拒绝
+              toolConstraint: reference     # reference=工具清单仅参考，不禁止未列出工具（默认）
+                                            # strict=只用环境信息中已安装的工具
 
             # ===== 日志 / 审计 =====
             logging:
@@ -94,6 +102,8 @@ public final class ConfigLoader {
             "llm.profile", "llm.profile.enabled", "llm.profile.toolWhitelist", "llm.profile.toolProbeTimeoutMs",
             "execution", "execution.defaultTimeoutSeconds", "execution.workDir", "execution.readOnly",
             "safety", "safety.strictMode", "safety.confirmDestructive", "safety.blockPrivateAddresses",
+            "safety.sudoPolicy",
+            "nlu", "nlu.executionJudgment", "nlu.toolConstraint",
             "logging", "logging.auditEnabled", "logging.auditPath");
 
     private ConfigLoader() {

@@ -44,3 +44,4 @@ config.yaml
 .idea/vcs.xml
 .idea/misc.xml
 .idea/.gitignore
+.idea/jsLibraryMappings.xml

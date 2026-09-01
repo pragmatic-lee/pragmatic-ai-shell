@@ -19,27 +19,47 @@ public final class LangChainNluService implements NluService {
     private final ModelRegistry registry;
     private final String systemPrompt;
     private final EnvironmentProfile profile;
+    private final ExecutionJudgment judgment;
 
     public LangChainNluService(ModelRegistry registry) {
         this(registry, null);
     }
 
     public LangChainNluService(ModelRegistry registry, EnvironmentProfile profile) {
+        this(registry, profile, ExecutionJudgment.enabled());
+    }
+
+    public LangChainNluService(ModelRegistry registry, EnvironmentProfile profile,
+                               ExecutionJudgment judgment) {
         this.registry = registry;
-        this.systemPrompt = loadSystemPrompt();
+        this.judgment = judgment == null ? ExecutionJudgment.enabled() : judgment;
+        this.systemPrompt = loadSystemPrompt(this.judgment.executionJudgment());
         this.profile = profile;
     }
 
-    private String loadSystemPrompt() {
-        try (var in = LangChainNluService.class
-                .getResourceAsStream("/prompts/nlu-system-prompt.txt")) {
+    /**
+     * 按 executionJudgment 选择 prompt：
+     * - true（默认，现状）：模型可返回 UNSAFE / IMPOSSIBLE；
+     * - false（FR-NJD-01）：模型只翻译，唯一拒绝出口为 UNTRANSLATABLE。
+     */
+    /** 包内可见以便单测断言 prompt 选择（FR-NJD-01）。 */
+    static String loadSystemPrompt(boolean executionJudgment) {
+        String resource = executionJudgment
+                ? "/prompts/nlu-system-prompt.txt"
+                : "/prompts/nlu-system-prompt-translate-only.txt";
+        try (var in = LangChainNluService.class.getResourceAsStream(resource)) {
             if (in != null) {
-                return new String(in.readAllBytes());
+                return new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
             }
         } catch (Exception ignored) {
         }
-        return "你是一个 shell 命令生成器。用户用自然语言描述操作意图，你只返回一条可执行的 shell 命令纯文本，"
-                + "不要任何解释、不要 markdown 代码块。如果请求不安全返回 UNSAFE，如果不可能完成返回 IMPOSSIBLE。";
+        // 兜底：资源缺失时不阻断启动，退回内置文本
+        return executionJudgment
+                ? "你是一个 shell 命令生成器。用户用自然语言描述操作意图，你只返回一条可执行的 shell 命令纯文本，"
+                        + "不要任何解释、不要 markdown 代码块。如果请求不安全返回 UNSAFE，如果不可能完成返回 IMPOSSIBLE。"
+                : "你是一个 shell 命令翻译器。用户用自然语言描述操作意图，你只返回一条对应的 shell 命令纯文本，"
+                        + "不要任何解释、不要 markdown 代码块。只做翻译，不判断命令能否执行成功、是否有风险；"
+                        + "仅当请求无法转换为任何 shell 命令时返回 UNTRANSLATABLE。";
     }
 
     @Override
@@ -58,7 +78,7 @@ public final class LangChainNluService implements NluService {
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(new SystemMessage(systemPrompt));
         if (profile != null) {
-            messages.add(new SystemMessage("当前环境信息（生成命令时请遵守）："
+            messages.add(new SystemMessage(judgment.envInfoHeader()
                     + System.lineSeparator() + profile.toPromptBlock()));
         }
         for (ContextTurn turn : history) {
@@ -70,16 +90,39 @@ public final class LangChainNluService implements NluService {
         if (msg == null || msg.text() == null) {
             return NluResult.impossible();
         }
-        String text = msg.text().trim();
+        return parseResponse(msg.text(), judgment);
+    }
+
+    /**
+     * 将模型原始输出解析为 {@link NluResult}（包内可见以便单测，无需真实 LLM 调用）。
+     *
+     * <p>执行判定开启时（现状）：UNSAFE / IMPOSSIBLE 原样返回，由调用方提示"模型拒绝"。
+     *
+     * <p>执行判定关闭时（FR-NJD-01/02）：模型的自我审查一律无效化——
+     * UNSAFE / IMPOSSIBLE 只按"翻译失败"处理，绝不允许模型的风险判断阻断命令展示
+     * （是否执行由人决定）。此时唯一有效的拒绝出口是 UNTRANSLATABLE，
+     * 语义严格限定为"无法转换为任何 shell 命令"。
+     */
+    static NluResult parseResponse(String rawText, ExecutionJudgment judgment) {
+        ExecutionJudgment j = judgment == null ? ExecutionJudgment.enabled() : judgment;
+        String text = rawText == null ? "" : rawText.trim();
+        String cmd = stripFence(text).trim();
+        if (cmd.isBlank()) {
+            return NluResult.impossible();
+        }
+        if (text.equalsIgnoreCase("UNTRANSLATABLE")) {
+            return NluResult.impossible();
+        }
+        if (!j.executionJudgment()) {
+            if (text.equalsIgnoreCase("UNSAFE") || text.equalsIgnoreCase("IMPOSSIBLE")) {
+                return NluResult.impossible();
+            }
+            return NluResult.command(cmd);
+        }
         if (text.equalsIgnoreCase("UNSAFE")) {
             return NluResult.unsafe();
         }
         if (text.equalsIgnoreCase("IMPOSSIBLE")) {
-            return NluResult.impossible();
-        }
-        // 去除可能被模型包裹的 ``` 代码围栏
-        String cmd = stripFence(text).trim();
-        if (cmd.isBlank()) {
             return NluResult.impossible();
         }
         return NluResult.command(cmd);
@@ -107,7 +150,7 @@ public final class LangChainNluService implements NluService {
         }
     }
 
-    private String stripFence(String text) {
+    private static String stripFence(String text) {
         String t = text;
         if (t.startsWith("```")) {
             int end = t.lastIndexOf("```");

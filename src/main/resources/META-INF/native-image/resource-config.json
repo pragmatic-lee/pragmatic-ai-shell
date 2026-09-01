@@ -1,0 +1,15 @@
+{
+  "resources": {
+    "includes": [
+      {
+        "pattern": "logback\\.xml"
+      },
+      {
+        "pattern": "prompts/nlu-system-prompt\\.txt"
+      },
+      {
+        "pattern": "prompts/nlu-system-prompt-translate-only\\.txt"
+      }
+    ]
+  }
+}

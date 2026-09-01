@@ -372,6 +372,10 @@ safety:
   strictMode: false         # 严格模式：所有命令都需确认
   confirmDestructive: true  # 危险命令二次确认
   blockPrivateAddresses: true # 拦截内网地址探测
+  sudoPolicy: confirm       # sudo 命令：confirm=提权确认后放行（默认）| reject=拒绝 | allow=放行
+nlu:
+  executionJudgment: false  # LLM 是否做执行判定（见下方说明，默认宽松）
+  toolConstraint: reference # strict=只用已探测工具 | reference=工具清单仅参考（默认）
 logging:
   auditEnabled: true        # 审计日志开关
   auditPath: ~/.smartcli/audit.log  # 审计路径（~ 展开，相对进程启动目录）
@@ -379,6 +383,38 @@ logging:
 
 > 路径字段（`workDir`/`auditPath`）支持 `~` 展开，相对路径以**进程启动目录**为基准。
 > 配置中的未知字段会在启动时告警并忽略；`version` 与程序支持版本不一致时告警。
+
+#### LLM 职责边界（`nlu.*`）
+
+语义模式下 LLM 默认身兼两职：**翻译**（自然语言 → 命令）与**审查**（判断能否/是否该执行）。
+零配置默认采用**宽松模式**——LLM 只做翻译，不做可行性/安全审查，命令交由你确认后执行。
+这避免了一个常见误伤：例如 `nginx` 不在工具探测清单时，严格模式会让模型返回 `IMPOSSIBLE`，
+**命令根本不生成**，你连"它想执行什么"都看不到。
+
+| 配置 | 默认 | 说明 |
+|------|------|------|
+| `executionJudgment` | `false` | `false`（宽松，默认）：**模型只翻译，不判定能否执行**，命令一律展示给你确认。<br>`true`（严格）：模型可因"有风险/不可行"拒绝输出命令 |
+| `toolConstraint` | `reference` | `reference`（宽松，默认）：工具清单仅参考，不禁止未列出/未安装的工具。<br>`strict`：只能使用环境信息中已安装的工具 |
+| `sudoPolicy` | `confirm` | `confirm`（默认）：提权命令（`systemctl` 等）确认后放行。<br>`reject`：拒绝所有 sudo 命令。<br>`allow`：sudo 命令直接放行 |
+
+**注意**：即使宽松模式下，模型仍保留一个拒绝出口——**仅当请求无法转换为任何 shell 命令时**
+（如"帮我写首诗"）才返回失败。命令可能失败、服务可能不存在、权限可能不足，这些**都不再是拒绝的理由**，
+因为判定权已归你。
+
+**安全底线不因宽松默认而削弱**：
+- 语义模式下每条命令都先打印 `➜ 建议执行: <命令>` 并要求确认（输入 `n` 跳过，回车执行）；
+- `SafetyFilterChain`（高危黑名单 / 敏感地址 / 破坏性确认）作为硬控制**始终生效**；
+- `sudoPolicy` 即使设为 `allow`，`sudo rm -rf /` 等命令仍被高危黑名单拦截。
+
+若你偏好更严格的默认（LLM 先自行把关），可显式配置：
+
+```yaml
+nlu:
+  executionJudgment: true
+  toolConstraint: strict
+safety:
+  sudoPolicy: reject
+```
 
 ### 审计日志示例（`~/.smartcli/audit.log`）
 

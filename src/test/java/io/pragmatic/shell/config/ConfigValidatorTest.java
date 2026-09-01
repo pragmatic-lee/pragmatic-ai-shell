@@ -32,6 +32,53 @@ class ConfigValidatorTest {
         assertFalse(r.degradeToDirect());
     }
 
+    // ===== NLU 职责边界与 sudo 策略校验（FR-NJD-01/03/Q3）=====
+
+    @Test
+    void defaultNluAndSudoPolicyPassValidation() {
+        // 默认配置（executionJudgment=true / strict / reject）应校验通过
+        ConfigValidator.ValidationResult r = ConfigValidator.validate(load(validConfig()));
+        assertFalse(r.errors().stream().anyMatch(e -> e.contains("nlu.")));
+        assertFalse(r.errors().stream().anyMatch(e -> e.contains("sudoPolicy")));
+    }
+
+    @Test
+    void invalidToolConstraintIsFatal() {
+        AppConfig c = validConfig();
+        c.getNlu().setToolConstraint("loose");
+        ConfigValidator.ValidationResult r = ConfigValidator.validate(load(c));
+        assertTrue(r.errors().stream().anyMatch(e -> e.contains("nlu.toolConstraint")),
+                "非法 toolConstraint 应致命, 实际错误: " + r.errors());
+    }
+
+    @Test
+    void invalidSudoPolicyIsFatal() {
+        AppConfig c = validConfig();
+        c.getSafety().setSudoPolicy("maybe");
+        ConfigValidator.ValidationResult r = ConfigValidator.validate(load(c));
+        assertTrue(r.errors().stream().anyMatch(e -> e.contains("safety.sudoPolicy")),
+                "非法 sudoPolicy 应致命, 实际错误: " + r.errors());
+    }
+
+    @Test
+    void nullSudoPolicyIsFatal() {
+        AppConfig c = validConfig();
+        c.getSafety().setSudoPolicy(null);
+        ConfigValidator.ValidationResult r = ConfigValidator.validate(load(c));
+        assertTrue(r.errors().stream().anyMatch(e -> e.contains("safety.sudoPolicy")),
+                "缺失 sudoPolicy 应致命（避免静默回退导致策略不确定）");
+    }
+
+    @Test
+    void validAlternativeValuesPass() {
+        AppConfig c = validConfig();
+        c.getNlu().setExecutionJudgment(false);
+        c.getNlu().setToolConstraint("reference");
+        c.getSafety().setSudoPolicy("confirm");
+        ConfigValidator.ValidationResult r = ConfigValidator.validate(load(c));
+        assertTrue(r.errors().isEmpty(), "运维推荐组合应校验通过, 实际错误: " + r.errors());
+    }
+
     @Test
     void invalidProviderIsFatal() {
         AppConfig c = validConfig();
