@@ -39,6 +39,10 @@ build/
 .DS_Store
 docs/
 config.yaml
+
+# 误创建于仓库根目录的字面 "~" 目录（运行时 ~ 未展开所致），内含审计日志，禁止入库
+~/
+
 .idea/claudeCodeTabState.xml
 .idea/encodings.xml
 .idea/vcs.xml
